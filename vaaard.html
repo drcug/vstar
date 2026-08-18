@@ -1,17 +1,21 @@
 <!DOCTYPE html>
 <html lang="it">
 <!-- ============================================================
-     WORDSTAR 4.0 per MS-DOS — clone fedele in HTML5/JS vanilla
+     VaaardStar — clone fedele di WordStar 4.0 per MS-DOS in HTML5/JS vanilla
      Schermo: 80 colonne x 25 righe, testo bianco su nero.
      Interfaccia in ITALIANO, utilizzabile anche da mobile.
      ============================================================ -->
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>WORDSTAR 4.0 — clone MS-DOS (80x25)</title>
+<title>VaaardStar — clone MS-DOS (80x25)</title>
 <link rel="icon" href="https://image.qwenlm.ai/public_source/65c69ebf-e819-431a-b6f8-3dfce81a99a1/147e539c9-f198-451f-8f27-b98f9fc5bf74.png">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/vt323/index.css">
 <style>
+  @font-face{
+    font-family:"WebPlus IBM VGA";
+    src:url("WebPlus_IBM_VGA_9x16.woff") format("woff");
+    font-weight:normal;font-style:normal;
+  }
   html,body{margin:0;height:100%;background:#000;overflow:hidden;overscroll-behavior:none;touch-action:manipulation}
   #wrap{display:flex;flex-direction:column;height:100vh;height:100dvh;width:100vw}
   #scrb{flex:1 1 auto;display:flex;align-items:center;justify-content:center;min-height:0}
@@ -25,14 +29,14 @@
   #bar{display:none;flex:0 0 auto;background:#000;border-top:1px solid #444;padding:4px 4px calc(4px + env(safe-area-inset-bottom));flex-direction:column;gap:4px;z-index:4}
   body.showbar #bar{display:flex}
   #bar .row{display:flex;gap:4px;flex-wrap:wrap;justify-content:center}
-  #bar button{font-family:"VT323","Courier New",monospace;font-size:clamp(13px,3.6vw,19px);line-height:1;
+  #bar button{font-family:"WebPlus IBM VGA","Courier New",monospace;font-size:clamp(13px,3.6vw,19px);line-height:1;
     background:#000;color:#fff;border:1px solid #fff;border-radius:0;padding:9px 8px;min-width:34px;
     touch-action:manipulation;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
   #bar button.on{background:#fff;color:#000}
   #grid{display:none}
   #bar.gridopen #grid{display:flex}
   #grid button{min-width:30px;flex:1 1 auto;max-width:56px}
-  #togglebar{position:fixed;top:6px;right:6px;z-index:6;font-family:"VT323","Courier New",monospace;
+  #togglebar{position:fixed;top:6px;right:6px;z-index:6;font-family:"WebPlus IBM VGA","Courier New",monospace;
     font-size:20px;background:#000;color:#fff;border:1px solid #fff;padding:3px 10px;
     touch-action:manipulation;-webkit-tap-highlight-color:transparent}
   #togglebar.on{background:#fff;color:#000}
@@ -56,7 +60,8 @@
 <script>
 'use strict';
 /* ------------------------------ COSTANTI ------------------------------ */
-const COLS=80, ROWS=25, RM=65, PAGE_LEN=66, LS_KEY='wordstar4_disk';
+const COLS=80, ROWS=25, RM=65, PAGE_LEN=66, LS_KEY='vaaardstar_disk';
+const FONT='"WebPlus IBM VGA","Courier New",monospace';
 const FG='#ffffff';
 const IS_TOUCH=(window.matchMedia&&matchMedia('(pointer:coarse)').matches)||('ontouchstart' in window);
 
@@ -78,7 +83,7 @@ const S={
 
 /* ------------------------------ DISCO VIRTUALE (localStorage) ------------------------------ */
 const README=
-"BENVENUTO IN WORDSTAR (R) 4.0\n"+
+"BENVENUTO IN VaaardStar\n"+
 "=============================\n"+
 "\n"+
 "Clone del leggendario word processor per MS-DOS:\n"+
@@ -117,19 +122,22 @@ const README=
 
 let disk=null;
 try{ disk=JSON.parse(localStorage.getItem(LS_KEY)); }catch(e){}
+if(!disk||typeof disk!=='object'){
+  try{ disk=JSON.parse(localStorage.getItem('wordstar4_disk')); }catch(e){}
+}
 if(!disk||typeof disk!=='object'){ disk={'README.TXT':README}; try{localStorage.setItem(LS_KEY,JSON.stringify(disk));}catch(e){} }
 function saveDisk(){ try{ localStorage.setItem(LS_KEY,JSON.stringify(disk)); }catch(e){} }
 
 /* ------------------------------ CANVAS 80x25 ------------------------------ */
 const cv=document.getElementById('scr'), cx=cv.getContext('2d');
 let FS=20, CW=10, CH=24;
-function applyFont(){ cx.font=FS+'px "VT323","Courier New",monospace'; cx.textAlign='center'; cx.textBaseline='middle'; }
+function applyFont(){ cx.font=FS+'px '+FONT; cx.textAlign='center'; cx.textBaseline='middle'; }
 function fit(){
   const box=document.getElementById('scrb');
   const W=Math.max(200,box.clientWidth||innerWidth);
   const H=Math.max(140,box.clientHeight||innerHeight);
   const probe=document.createElement('canvas').getContext('2d');
-  probe.font='100px "VT323","Courier New",monospace';
+  probe.font='100px '+FONT;
   const m=probe.measureText('M');
   const cwu=m.width/100;
   const asc=m.actualBoundingBoxAscent||78, des=m.actualBoundingBoxDescent||22;
@@ -648,7 +656,7 @@ const HELP_PAGES=[
 ],
 [
 '  NOTE PER IL BROWSER','',
-'  Clone non ufficiale di WordStar 4.0 per MS-DOS.','',
+'  Clone non ufficiale di VaaardStar (ispirato a WordStar 4.0 per MS-DOS).','',
 '  Su computer alcuni Ctrl (^T ^W ^N) possono essere presi','',
 '  dal browser. Alternativa: Ctrl+Backspace = ^T.','',
 '  Su telefono/tablet: tocca lo schermo per spostare il','',
@@ -671,7 +679,7 @@ function keyHelp(e){
 /* ------------------------------ SHELL DOS (^R) ------------------------------ */
 function startDos(){
   S.dosFrom=S.mode; S.mode='dos'; S.dosInput='';
-  S.dosLines=['SHELL DOS DI WORDSTAR (simulata)','','Digita HELP per i comandi, EXIT per tornare a WordStar.',''];
+  S.dosLines=['SHELL DOS DI VaaardStar (simulata)','','Digita HELP per i comandi, EXIT per tornare a VaaardStar.',''];
 }
 function keyDos(e){
   if(e.code==='Escape'){ S.mode=S.dosFrom; return; }
@@ -733,7 +741,7 @@ function keyOpen(e){
     case 'l': say('Drive corrente: A:'); break;
     case 'm': say('MailMerge non installato'); break;
     case 's': say('SpellStar non installato'); break;
-    case 'x': askYN('Uscire da WordStar? ',y=>{ if(y)S.mode='exit'; }); break;
+    case 'x': askYN('Uscire da VaaardStar? ',y=>{ if(y)S.mode='exit'; }); break;
     default: if(k.length===1&&k>=' ')beep();
   }
 }
@@ -819,7 +827,7 @@ function drawOpen(){
   drawTxt(4,1,'L  Cambia drive'); drawTxt(4,32,'P  STAMPA un file'); drawTxt(4,58,'R  Esegui programma');
   drawTxt(5,1,'F  Elenco file'); drawTxt(5,32,'E  RINOMINA un file'); drawTxt(5,58,'X  ESCI dal sistema');
   drawTxt(6,1,'H  Livello di aiuto'); drawTxt(6,32,'O  COPIA un file');
-  drawTxt(7,1,'---Comandi per aprire---'); drawTxt(7,32,'Y  CANCELLA un file'); drawTxt(7,58,'-Opzioni WordStar-');
+  drawTxt(7,1,'---Comandi per aprire---'); drawTxt(7,32,'Y  CANCELLA un file'); drawTxt(7,58,'-Opzioni VaaardStar-');
   drawTxt(8,1,'D  Apri un documento'); drawTxt(8,58,'M  Esegui MailMerge');
   drawTxt(9,1,'N  Apri un non-documento'); drawTxt(9,58,'S  Esegui SpellStar');
   drawTxt(11,1,'A: FILE SUL DISCO ('+dateStr()+'):');
@@ -841,7 +849,7 @@ function drawDir(){
   bottomLine(false);
 }
 function drawHelp(){
-  center(0,'AIUTO DI WORDSTAR');
+  center(0,'AIUTO DI VaaardStar');
   const pg=HELP_PAGES[S.helpPage]||[];
   pg.forEach((s,i)=>drawTxt(2+i,1,s));
   center(22,'--- pagina '+(S.helpPage+1)+' di '+HELP_PAGES.length+' ---');
@@ -855,7 +863,7 @@ function drawDos(){
   if(blinkOn)drawCell(Math.min(6+S.dosInput.length,79),r,' ',true);
 }
 function drawBoot(){
-  center(7,'W O R D S T A R (R)');
+  center(7,'V A A A R D S T A R');
   center(9,'Versione 4.00  -  MS-DOS');
   center(11,'clone non ufficiale per browser - 80x25');
   center(14,'Caricamento...');
@@ -863,7 +871,7 @@ function drawBoot(){
   center(24,'omaggio a MicroPro International (1978-1987)');
 }
 function drawExit(){
-  center(10,'Uscita da WordStar completata.');
+  center(10,'Uscita da VaaardStar completata.');
   center(12,'Ora puoi chiudere questa scheda.');
   center(14,'(premi R per riavviare)');
 }
@@ -893,6 +901,9 @@ function loop(t){
 
 /* ------------------------------ DISPATCH EVENTI TASTIERA ------------------------------ */
 const keyin=document.getElementById('keyin');
+function isBarOpen(){ return document.body.classList.contains('showbar'); }
+function focusKeyin(){ if(IS_TOUCH&&!isBarOpen()){ try{keyin.focus({preventScroll:true});}catch(e){} } }
+function blurKeyin(){ try{keyin.blur();}catch(e){} }
 function dispatch(e){
   if(e.key==='F12')return;
   if(S.prompt){ handlePrompt(e); return; }
@@ -919,8 +930,7 @@ keyin.addEventListener('input',()=>{
   const t=keyin.value; keyin.value='';
   for(const ch of t){ if(ch>=' ')dispatch({key:ch,code:'',ctrlKey:false,altKey:false,metaKey:false}); }
 });
-keyin.addEventListener('blur',()=>{ if(IS_TOUCH&&S.mode!=='exit')setTimeout(()=>{ try{keyin.focus({preventScroll:true});}catch(e){} },80); });
-function focusKeyin(){ if(IS_TOUCH){ try{keyin.focus({preventScroll:true});}catch(e){} } }
+keyin.addEventListener('blur',()=>{ if(IS_TOUCH&&!isBarOpen()&&S.mode!=='exit')setTimeout(focusKeyin,80); });
 
 /* incolla (da menu del browser / Ctrl+V dove consentito) */
 window.addEventListener('paste',e=>{
@@ -999,7 +1009,13 @@ function buildBar(){
 }
 buildBar();
 const tg=document.getElementById('togglebar');
-function setBar(show){ document.body.classList.toggle('showbar',show); tg.classList.toggle('on',show); requestAnimationFrame(()=>requestAnimationFrame(fit)); }
+function setBar(show){
+  document.body.classList.toggle('showbar',show);
+  tg.classList.toggle('on',show);
+  if(show)blurKeyin();
+  else focusKeyin();
+  requestAnimationFrame(()=>requestAnimationFrame(fit));
+}
 tg.addEventListener('pointerdown',e=>e.preventDefault());
 tg.addEventListener('click',e=>{ e.preventDefault(); setBar(!document.body.classList.contains('showbar')); });
 if(IS_TOUCH)setBar(true);
@@ -1010,7 +1026,7 @@ window.addEventListener('resize',fit);
 if(window.visualViewport)visualViewport.addEventListener('resize',fit);
 let inited=false;
 function init(){ if(inited)return; inited=true; fit(); requestAnimationFrame(loop); }
-if(document.fonts&&document.fonts.load){ document.fonts.load('20px "VT323"').then(init).catch(init); }
+if(document.fonts&&document.fonts.load){ document.fonts.load('20px '+FONT).then(init).catch(init); }
 else init();
 setTimeout(init,1500);
 </script>
