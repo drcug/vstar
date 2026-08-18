@@ -25,6 +25,8 @@
   html,body{margin:0;height:100%;background:#000;overflow:hidden;overscroll-behavior:none;touch-action:manipulation}
   #wrap{display:flex;flex-direction:column;height:100vh;height:100dvh;width:100vw}
   #scrb{flex:1 1 auto;display:flex;align-items:center;justify-content:center;min-height:0}
+  body.portrait-zoom #scrb{align-items:flex-start;justify-content:flex-start;overflow:auto;-webkit-overflow-scrolling:touch}
+  body.portrait-zoom #scrb canvas{margin:0}
   canvas{display:block;background:#000;touch-action:manipulation}
   /* leggero effetto CRT (scanline + vignettatura) */
   #crt{pointer-events:none;position:fixed;inset:0;z-index:3;
@@ -39,13 +41,21 @@
     background:#000;color:#fff;border:1px solid #fff;border-radius:0;padding:9px 8px;min-width:34px;
     touch-action:manipulation;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
   #bar button.on{background:#fff;color:#000}
-  #grid{display:none}
-  #bar.gridopen #grid{display:flex}
-  #grid button{min-width:30px;flex:1 1 auto;max-width:56px}
+  #bar button.wide{flex:1 1 100px;min-width:72px;max-width:none}
+  #bar button.tab{font-size:clamp(11px,3vw,15px);min-width:40px;padding:7px 6px}
+  #bar .panel{display:none;gap:4px;flex-wrap:wrap;justify-content:center}
+  body.showbar #bar.panel-abc #panel-abc{display:flex}
+  body.showbar #bar.panel-123 #panel-123{display:flex}
+  body.showbar #bar.panel-punct #panel-punct{display:flex}
+  body.showbar #bar.panel-accent #panel-accent{display:flex}
   #togglebar{position:fixed;top:6px;right:6px;z-index:6;font-family:"WebPlus IBM VGA","Courier New",monospace;
     font-size:20px;background:#000;color:#fff;border:1px solid #fff;padding:3px 10px;
     touch-action:manipulation;-webkit-tap-highlight-color:transparent}
   #togglebar.on{background:#fff;color:#000}
+  #togglezoom{position:fixed;top:6px;left:6px;z-index:6;display:none;font-family:"WebPlus IBM VGA","Courier New",monospace;
+    font-size:18px;background:#000;color:#fff;border:1px solid #fff;padding:3px 10px;
+    touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+  #togglezoom.on{background:#fff;color:#000}
   /* campo nascosto per aprire la tastiera di sistema su mobile */
   #keyin{position:fixed;left:0;bottom:0;width:2px;height:2px;opacity:.01;border:0;padding:0;
     background:transparent;color:transparent;font-size:16px;z-index:1;resize:none}
@@ -54,12 +64,17 @@
 <body>
 <div id="wrap">
   <div id="scrb"><canvas id="scr"></canvas></div>
-  <div id="bar">
+  <div id="bar" class="panel-abc">
     <div class="row" id="row1"></div>
     <div class="row" id="row2"></div>
-    <div class="row" id="grid"></div>
+    <div class="row" id="row3"></div>
+    <div class="row panel" id="panel-abc"></div>
+    <div class="row panel" id="panel-123"></div>
+    <div class="row panel" id="panel-punct"></div>
+    <div class="row panel" id="panel-accent"></div>
   </div>
 </div>
+<button id="togglezoom">ZOOM</button>
 <button id="togglebar">⌨ TASTIERA</button>
 <textarea id="keyin" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="enter"></textarea>
 <input type="file" id="fileimport" accept=".cio,.txt,.text,.md,.log" multiple hidden>
@@ -127,9 +142,10 @@ const README=
 "\n"+
 "SU TELEFONO/TABLET\n"+
 "  Tocca lo schermo per spostare il cursore.\n"+
-"  Usa il pulsante TASTIERA qui sotto per i comandi ^:\n"+
-"  prima CTRL, poi la lettera (es. CTRL+S, CTRL+K, CTRL+Q).\n"+
-"  Il testo si digita con la tastiera del dispositivo.\n"+
+"  TASTIERA a schermo: ABC, 123, punteggiatura, accenti.\n"+
+"  CAPS = maiuscole  SPAZIO  accenti + vocali (es. `+a=à).\n"+
+"  ZOOM (portrait): testo ingrandito a tutto schermo.\n"+
+"  Con barra aperta non si apre la tastiera Android.\n"+
 "\n"+
 "Nota: alcuni Ctrl (^T ^W ^N) possono essere intercettati\n"+
 "dal browser: usa Ctrl+Backspace per ^T.\n"+
@@ -444,8 +460,16 @@ function registerSW(){
 
 /* ------------------------------ CANVAS 80x25 ------------------------------ */
 const cv=document.getElementById('scr'), cx=cv.getContext('2d');
-let FS=20, CW=10, CH=24;
+let FS=20, CW=10, CH=24, zoomMode=false, viewHscroll=0, viewCols=COLS, viewRows=ROWS;
+function isPortrait(){ return innerHeight>innerWidth; }
+function isPortraitZoom(){ return zoomMode&&IS_TOUCH&&isPortrait(); }
 function applyFont(){ cx.font=FS+'px '+FONT; cx.textAlign='center'; cx.textBaseline='middle'; }
+function ensureHScroll(){
+  if(!isPortraitZoom()||S.mode!=='edit'){ viewHscroll=0; return; }
+  if(S.col<viewHscroll)viewHscroll=Math.max(0,S.col-3);
+  if(S.col>=viewHscroll+viewCols)viewHscroll=S.col-viewCols+4;
+  viewHscroll=Math.max(0,Math.min(viewHscroll,COLS-viewCols));
+}
 function fit(){
   const box=document.getElementById('scrb');
   const W=Math.max(200,box.clientWidth||innerWidth);
@@ -456,11 +480,40 @@ function fit(){
   const cwu=m.width/100;
   const asc=m.actualBoundingBoxAscent||78, des=m.actualBoundingBoxDescent||22;
   const chu=Math.max((asc+des)/100*1.22,1.02);
+  const dpr=Math.min(window.devicePixelRatio||1,2);
+  document.body.classList.toggle('portrait-zoom',isPortraitZoom());
+  if(isPortraitZoom()){
+    if(S.mode==='edit'){
+      viewCols=Math.max(26,Math.min(44,Math.floor(W/10)));
+      FS=Math.max(12,Math.floor(W/viewCols)-1);
+      applyFont();
+      CW=cx.measureText('M').width;
+      CH=FS*chu;
+      viewRows=Math.max(ROWS+4,Math.floor(H/CH));
+      viewRows=Math.min(viewRows,64);
+      ensureHScroll();
+      cv.width=Math.round(viewCols*CW*dpr); cv.height=Math.round(viewRows*CH*dpr);
+      cv.style.width=Math.round(viewCols*CW)+'px'; cv.style.height=Math.round(viewRows*CH)+'px';
+      cx.setTransform(dpr,0,0,dpr,0,0);
+      applyFont();
+      return;
+    }
+    viewCols=COLS; viewRows=ROWS; viewHscroll=0;
+    FS=Math.max(6,Math.floor(W/(COLS*cwu))-1);
+    applyFont();
+    CW=cx.measureText('M').width;
+    CH=FS*chu;
+    cv.width=Math.round(COLS*CW*dpr); cv.height=Math.round(ROWS*CH*dpr);
+    cv.style.width=Math.round(COLS*CW)+'px'; cv.style.height=Math.round(ROWS*CH)+'px';
+    cx.setTransform(dpr,0,0,dpr,0,0);
+    applyFont();
+    return;
+  }
+  viewCols=COLS; viewRows=ROWS; viewHscroll=0;
   FS=Math.max(5,Math.floor(Math.min(W/(COLS*cwu),H/(ROWS*chu)))-1);
   applyFont();
   CW=cx.measureText('M').width;
   CH=FS*chu;
-  const dpr=Math.min(window.devicePixelRatio||1,2);
   cv.width=Math.round(COLS*CW*dpr); cv.height=Math.round(ROWS*CH*dpr);
   cv.style.width=Math.round(COLS*CW)+'px'; cv.style.height=Math.round(ROWS*CH)+'px';
   cx.setTransform(dpr,0,0,dpr,0,0);
@@ -527,13 +580,14 @@ function clampCursor(){
   const L=(S.doc[S.ln]||'').length;
   if(S.col<0)S.col=0; if(S.col>L)S.col=L; if(S.col>COLS-1)S.col=COLS-1;
 }
-function editTextTop(){ return Math.min(3,S.helpLevel)+(S.ruler?1:0); }
-function textRows(){ return 24-editTextTop(); }
+function editTextTop(){ if(isPortraitZoom()&&S.mode==='edit')return 0; return Math.min(3,S.helpLevel)+(S.ruler?1:0); }
+function textRows(){ if(isPortraitZoom()&&S.mode==='edit')return viewRows-2; return 24-editTextTop(); }
 function ensureVisible(){
   const rows=textRows();
   if(S.ln<S.top)S.top=S.ln;
   if(S.ln>=S.top+rows)S.top=S.ln-rows+1;
   if(S.top<0)S.top=0;
+  ensureHScroll();
 }
 function absPos(p){ let n=0; for(let i=0;i<p.ln;i++)n+=(S.doc[i]||'').length+1; return n+Math.min(p.col,(S.doc[p.ln]||'').length); }
 function unabsPos(n){ for(let i=0;i<S.doc.length;i++){ const L=(S.doc[i]||'').length+1; if(n<L)return{ln:i,col:n}; n-=L; } const l=S.doc.length-1; return {ln:l,col:(S.doc[l]||'').length}; }
@@ -977,8 +1031,10 @@ const HELP_PAGES=[
 '  Su computer alcuni Ctrl (^T ^W ^N) possono essere presi','',
 '  dal browser. Alternativa: Ctrl+Backspace = ^T.','',
 '  Su telefono/tablet: tocca lo schermo per spostare il','',
-'  cursore e usa la barra TASTIERA: premi CTRL e poi la','',
-'  lettera del comando (es. CTRL+K poi B per marcare).','',
+'  cursore. Tastiera a schermo con ABC, numeri, CAPS,','',
+'  SPAZIO, punteggiatura e accenti (´` + vocali).','',
+'  In portrait usa ZOOM per testo ingrandito.','',
+'  CTRL + lettera per i comandi ^ (es. CTRL+K B).','',
 '  Per incollare testo usa il menu del browser.  F2 salva.','',
 '  Formato nativo: .cio (testo Unicode). Importa anche .txt.','',
 '  Menu: I importa  B backup ZIP  U ripristina  P esporta.','',
@@ -1122,6 +1178,7 @@ function bottomLine(showStatus){
   }
 }
 function drawEdit(){
+  if(isPortraitZoom()){ drawEditZoom(); return; }
   const M=menuLines();
   let r=0;
   for(let i=0;i<Math.min(3,S.helpLevel);i++)drawTxt(r++,0,M[i]);
@@ -1148,6 +1205,50 @@ function drawEdit(){
     drawCell(Math.min(S.col,COLS-1),crow,ch,true);
   }
   bottomLine(true);
+}
+function drawTxtZoom(r,s){
+  s=(s||'').slice(0,viewCols);
+  for(let i=0;i<s.length;i++)drawCell(i,r,s[i]);
+}
+function drawZoomBottom(){
+  const r=viewRows-1;
+  const left=S.prompt?promptText():(S.msg||'');
+  const st=statusStr();
+  const line=((left||'')+'  '+st).slice(0,viewCols);
+  drawTxtZoom(r,line);
+  if(S.prompt&&S.prompt.type==='text'&&blinkOn){
+    const len=Math.min((left||'').length,viewCols-1);
+    drawCell(len,r,' ',true);
+  }
+}
+function drawEditZoom(){
+  ensureVisible();
+  const rows=textRows();
+  const blk=normBlock();
+  for(let i=0;i<rows;i++){
+    const li=S.top+i;
+    const line=(S.doc[li]!==undefined?S.doc[li]:'');
+    const vis=line.slice(viewHscroll,viewHscroll+viewCols);
+    for(let c=0;c<viewCols;c++)drawCell(c,i,(c<vis.length?vis[c]:' '));
+    if(blk&&S.blkVis){
+      let a=-1,b=-1;
+      if(li>blk.a.ln&&li<blk.b.ln){a=viewHscroll;b=viewHscroll+viewCols;}
+      else if(li===blk.a.ln){a=blk.a.col;b=(li===blk.b.ln)?blk.b.col:viewHscroll+viewCols;}
+      else if(li===blk.b.ln){a=viewHscroll;b=blk.b.col;}
+      a=Math.max(a,viewHscroll); b=Math.min(b,viewHscroll+viewCols);
+      if(b>a)for(let c=a;c<b;c++)drawCell(c-viewHscroll,i,(line[c]||' '),true);
+    }
+  }
+  const crow=S.ln-S.top;
+  if(crow>=0&&crow<rows&&!S.prompt&&blinkOn){
+    const dc=S.col-viewHscroll;
+    if(dc>=0&&dc<viewCols){
+      const line=S.doc[S.ln]||'';
+      const ch=(S.col<line.length)?line[S.col]:' ';
+      drawCell(dc,crow,ch,true);
+    }
+  }
+  drawZoomBottom();
 }
 function drawOpen(){
   center(1,'< < <  M E N U   P R I N C I P A L E  > > >');
@@ -1205,7 +1306,9 @@ function drawExit(){
   center(14,'(premi R per riavviare)');
 }
 function frame(){
-  cx.fillStyle='#000'; cx.fillRect(0,0,COLS*CW,ROWS*CH);
+  const fw=isPortraitZoom()?viewCols*CW:COLS*CW;
+  const fh=isPortraitZoom()?viewRows*CH:ROWS*CH;
+  cx.fillStyle='#000'; cx.fillRect(0,0,fw,fh);
   cx.save();
   cx.fillStyle=FG;
   cx.shadowColor='rgba(255,255,255,.5)';
@@ -1277,23 +1380,70 @@ cv.addEventListener('pointerdown',e=>{
   focusKeyin();
   if(S.mode==='edit'&&!S.prompt){
     const r=cv.getBoundingClientRect();
-    const col=Math.floor((e.clientX-r.left)/r.width*COLS);
-    const row=Math.floor((e.clientY-r.top)/r.height*ROWS);
-    const top=editTextTop();
-    if(row>=top&&row<24){
-      const li=S.top+(row-top);
-      if(li>=0&&li<S.doc.length){ S.ln=li; S.col=Math.min(Math.max(col,0),(S.doc[li]||'').length); ensureVisible(); }
+    if(isPortraitZoom()){
+      const col=viewHscroll+Math.floor((e.clientX-r.left)/r.width*viewCols);
+      const row=Math.floor((e.clientY-r.top)/r.height*viewRows);
+      const rows=textRows();
+      if(row>=0&&row<rows){
+        const li=S.top+row;
+        if(li>=0&&li<S.doc.length){ S.ln=li; S.col=Math.min(Math.max(col,0),(S.doc[li]||'').length); ensureVisible(); }
+      }
+    }else{
+      const col=Math.floor((e.clientX-r.left)/r.width*COLS);
+      const row=Math.floor((e.clientY-r.top)/r.height*ROWS);
+      const top=editTextTop();
+      if(row>=top&&row<24){
+        const li=S.top+(row-top);
+        if(li>=0&&li<S.doc.length){ S.ln=li; S.col=Math.min(Math.max(col,0),(S.doc[li]||'').length); ensureVisible(); }
+      }
     }
   }
 });
 document.getElementById('scrb').addEventListener('pointerdown',()=>focusKeyin());
 
 /* ------------------------------ BARRA COMANDI TOUCH ------------------------------ */
-let ctrlArmed=false;
+let ctrlArmed=false, capsLock=false, accentDead=null, barPanel='abc';
+const ACCENT_MAP={
+  '`':{a:'à',e:'è',i:'ì',o:'ò',u:'ù',A:'À',E:'È',I:'Ì',O:'Ò',U:'Ù'},
+  "'":{e:'é',E:'É'},
+  '^':{a:'â',e:'ê',i:'î',o:'ô',u:'û',A:'Â',E:'Ê',I:'Î',O:'Ô',U:'Û'},
+  '"':{a:'ä',e:'ë',i:'ï',o:'ö',u:'ü',A:'Ä',E:'Ë',I:'Ï',O:'Ö',U:'Ü'}
+};
 const barEl=document.getElementById('bar');
 function pressCtrl(letter){ dispatch({ctrlKey:true,metaKey:false,altKey:false,code:'Key'+letter,key:letter}); }
 function pressPlain(ch){ dispatch({ctrlKey:false,metaKey:false,altKey:false,code:'',key:ch}); }
 function pressCode(code,key){ dispatch({ctrlKey:false,metaKey:false,altKey:false,code:code,key:key||code}); }
+function updateAccentUI(){
+  document.querySelectorAll('[data-accent]').forEach(b=>b.classList.toggle('on',b.dataset.accent===accentDead));
+}
+function armAccent(a){ accentDead=accentDead===a?null:a; updateAccentUI(); }
+function typeFromBar(ch){
+  if(accentDead){
+    const m=ACCENT_MAP[accentDead];
+    let out=(m&&m[ch])||(m&&m[ch.toUpperCase()]);
+    if(!out&&m&&/[a-zA-Z]/.test(ch))out=m[ch.toLowerCase()]||m[ch.toUpperCase()];
+    if(!out)out=accentDead+ch;
+    accentDead=null; updateAccentUI();
+    pressPlain(out); return;
+  }
+  let c=ch;
+  if(c.length===1&&/[a-zA-Z]/.test(c))c=capsLock?c.toUpperCase():c.toLowerCase();
+  if(ctrlArmed){
+    pressCtrl(c.toUpperCase());
+    ctrlArmed=false;
+    const bc=document.getElementById('btn-ctrl');
+    if(bc)bc.classList.remove('on');
+  }else pressPlain(c);
+}
+function setBarPanel(p){
+  barPanel=p;
+  barEl.classList.remove('panel-abc','panel-123','panel-punct','panel-accent');
+  barEl.classList.add('panel-'+p);
+  ['abc','123','punct','accent'].forEach(id=>{
+    const t=document.getElementById('tab-'+id);
+    if(t)t.classList.toggle('on',id===p);
+  });
+}
 function startRep(act,b){ stopRep(b); b._t=setTimeout(()=>{ b._i=setInterval(act,90); },400); }
 function stopRep(b){ if(b._t)clearTimeout(b._t); if(b._i)clearInterval(b._i); }
 function mkBtn(label,act,rep,cls){
@@ -1307,8 +1457,11 @@ function mkBtn(label,act,rep,cls){
 function buildBar(){
   const r1=document.getElementById('row1');
   const r2=document.getElementById('row2');
-  const grid=document.getElementById('grid');
-  // riga 1: frecce, correzione, invio, esc
+  const r3=document.getElementById('row3');
+  const pAbc=document.getElementById('panel-abc');
+  const p123=document.getElementById('panel-123');
+  const pPunct=document.getElementById('panel-punct');
+  const pAccent=document.getElementById('panel-accent');
   r1.appendChild(mkBtn('◄',()=>pressCode('ArrowLeft'),true));
   r1.appendChild(mkBtn('▲',()=>pressCode('ArrowUp'),true));
   r1.appendChild(mkBtn('▼',()=>pressCode('ArrowDown'),true));
@@ -1317,27 +1470,55 @@ function buildBar(){
   r1.appendChild(mkBtn('CANC',()=>pressCode('Delete')));
   r1.appendChild(mkBtn('INVIO',()=>pressCode('Enter')));
   r1.appendChild(mkBtn('ESC',()=>pressCode('Escape')));
-  // riga 2: CTRL e scorciatoie
   const bc=mkBtn('CTRL',()=>{ ctrlArmed=!ctrlArmed; bc.classList.toggle('on',ctrlArmed); });
+  bc.id='btn-ctrl';
+  const bCaps=mkBtn('CAPS',()=>{ capsLock=!capsLock; bCaps.classList.toggle('on',capsLock); });
   r2.appendChild(bc);
+  r2.appendChild(bCaps);
   r2.appendChild(mkBtn('SALVA',()=>{ pressCtrl('K'); pressPlain('S'); }));
   r2.appendChild(mkBtn('TROVA',()=>{ pressCtrl('Q'); pressPlain('F'); }));
-  r2.appendChild(mkBtn('SOST',()=>{ pressCtrl('Q'); pressPlain('A'); }));
   r2.appendChild(mkBtn('AIUTO',()=>{ pressCtrl('G'); }));
   r2.appendChild(mkBtn('ANNULLA',()=>{ pressCtrl('U'); }));
   r2.appendChild(mkBtn('INS',()=>toggleIns()));
-  r2.appendChild(mkBtn('ABC',()=>barEl.classList.toggle('gridopen')));
-  // griglia: cifre + lettere (per i comandi ^X)
+  const tabAbc=mkBtn('ABC',()=>setBarPanel('abc')); tabAbc.id='tab-abc'; tabAbc.className='tab on';
+  const tab123=mkBtn('123',()=>setBarPanel('123')); tab123.id='tab-123'; tab123.className='tab';
+  const tabPunct=mkBtn('.,!',()=>setBarPanel('punct')); tabPunct.id='tab-punct'; tabPunct.className='tab';
+  const tabAccent=mkBtn('´`',()=>setBarPanel('accent')); tabAccent.id='tab-accent'; tabAccent.className='tab';
+  r2.appendChild(tabAbc); r2.appendChild(tab123); r2.appendChild(tabPunct); r2.appendChild(tabAccent);
+  r3.appendChild(mkBtn('SPAZIO',()=>typeFromBar(' '),true,'wide'));
   const letterAct=ch=>{
     if(ctrlArmed){ pressCtrl(ch); ctrlArmed=false; bc.classList.remove('on'); }
-    else pressPlain(ch);
+    else typeFromBar(ch);
   };
-  '1234567890'.split('').forEach(ch=>grid.appendChild(mkBtn(ch,()=>letterAct(ch))));
-  'QWERTYUIOPASDFGHJKLZXCVBNM'.split('').forEach(ch=>grid.appendChild(mkBtn(ch,()=>letterAct(ch))));
+  'QWERTYUIOPASDFGHJKLZXCVBNM'.split('').forEach(ch=>pAbc.appendChild(mkBtn(ch,()=>letterAct(ch))));
+  '1234567890'.split('').forEach(ch=>p123.appendChild(mkBtn(ch,()=>typeFromBar(ch))));
+  '.:,;!?-_()/\\@#%&*+=[]{}<>"\'|'.split('').forEach(ch=>pPunct.appendChild(mkBtn(ch,()=>typeFromBar(ch))));
+  [['`','`'],['´',"'"],['^','^'],['¨','"']].forEach(([lbl,key])=>{
+    const b=mkBtn(lbl,()=>armAccent(key));
+    b.dataset.accent=key;
+    pAccent.appendChild(b);
+  });
+  'AEIOUaeiou'.split('').forEach(ch=>pAccent.appendChild(mkBtn(ch,()=>{
+    if(accentDead)typeFromBar(ch);
+    else typeFromBar(ch);
+  })));
+  pAccent.appendChild(mkBtn('ESC ACC',()=>{ accentDead=null; updateAccentUI(); }));
   barEl.addEventListener('contextmenu',e=>e.preventDefault());
+  setBarPanel('abc');
 }
 buildBar();
 const tg=document.getElementById('togglebar');
+const tz=document.getElementById('togglezoom');
+function updateZoomBtn(){
+  const show=IS_TOUCH&&isPortrait();
+  tz.style.display=show?'block':'none';
+  if(!show){ zoomMode=false; document.body.classList.remove('portrait-zoom'); }
+}
+function setZoom(on){
+  zoomMode=!!on;
+  tz.classList.toggle('on',zoomMode);
+  requestAnimationFrame(()=>requestAnimationFrame(fit));
+}
 function setBar(show){
   document.body.classList.toggle('showbar',show);
   tg.classList.toggle('on',show);
@@ -1347,7 +1528,11 @@ function setBar(show){
 }
 tg.addEventListener('pointerdown',e=>e.preventDefault());
 tg.addEventListener('click',e=>{ e.preventDefault(); setBar(!document.body.classList.contains('showbar')); });
-if(IS_TOUCH)setBar(true);
+tz.addEventListener('pointerdown',e=>e.preventDefault());
+tz.addEventListener('click',e=>{ e.preventDefault(); setZoom(!zoomMode); });
+if(IS_TOUCH){ setBar(true); if(isPortrait())setZoom(true); }
+updateZoomBtn();
+window.addEventListener('resize',updateZoomBtn);
 document.addEventListener('touchmove',e=>e.preventDefault(),{passive:false});
 window.addEventListener('beforeunload',e=>{ if(S.dirty){ e.preventDefault(); e.returnValue=''; } });
 document.body.addEventListener('dragover',e=>{ e.preventDefault(); });
