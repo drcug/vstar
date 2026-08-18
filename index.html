@@ -24,9 +24,10 @@
   }
   html,body{margin:0;height:100%;background:#000;overflow:hidden;overscroll-behavior:none;touch-action:manipulation}
   #wrap{display:flex;flex-direction:column;height:100vh;height:100dvh;width:100vw}
-  #scrb{flex:1 1 auto;display:flex;align-items:center;justify-content:center;min-height:0}
-  body.portrait-zoom #scrb{align-items:flex-start;justify-content:flex-start;overflow:auto;-webkit-overflow-scrolling:touch}
-  body.portrait-zoom #scrb canvas{margin:0}
+  #scrb{flex:1 1 auto;display:flex;align-items:center;justify-content:center;min-height:0;overflow:hidden}
+  body.portrait-zoom #scrb{align-items:flex-start;justify-content:flex-start}
+  body.portrait-zoom #scrb canvas{margin:0;flex-shrink:0}
+  body.keyboard-open #scrb{align-items:flex-start;justify-content:flex-start}
   canvas{display:block;background:#000;touch-action:manipulation}
   /* leggero effetto CRT (scanline + vignettatura) */
   #crt{pointer-events:none;position:fixed;inset:0;z-index:3;
@@ -34,20 +35,21 @@
       repeating-linear-gradient(0deg,rgba(0,0,0,.20) 0 1px,transparent 1px 3px),
       radial-gradient(ellipse at center,transparent 62%,rgba(0,0,0,.45) 100%);}
   /* ------- barra comandi touch ------- */
-  #bar{display:none;flex:0 0 auto;background:#000;border-top:1px solid #444;padding:4px 4px calc(4px + env(safe-area-inset-bottom));flex-direction:column;gap:4px;z-index:4}
+  #bar{display:none;flex:0 0 auto;background:#000;border-top:1px solid #444;padding:6px 4px calc(6px + env(safe-area-inset-bottom));flex-direction:column;gap:5px;z-index:4;max-height:46vh;overflow-y:auto;-webkit-overflow-scrolling:touch}
   body.showbar #bar{display:flex}
-  #bar .row{display:flex;gap:4px;flex-wrap:wrap;justify-content:center}
-  #bar button{font-family:"WebPlus IBM VGA","Courier New",monospace;font-size:clamp(13px,3.6vw,19px);line-height:1;
-    background:#000;color:#fff;border:1px solid #fff;border-radius:0;padding:9px 8px;min-width:34px;
+  #bar .kb-row{display:flex;gap:4px;width:100%;flex-shrink:0}
+  #bar .kb-panel{display:none;flex-direction:column;gap:4px;width:100%;flex-shrink:0}
+  body.showbar #bar.kb-abc #kb-panel-abc{display:flex}
+  body.showbar #bar.kb-123 #kb-panel-123{display:flex}
+  body.showbar #bar.kb-punct #kb-panel-punct{display:flex}
+  body.showbar #bar.kb-accent #kb-panel-accent{display:flex}
+  #bar button{font-family:"WebPlus IBM VGA","Courier New",monospace;font-size:clamp(14px,4.1vw,17px);line-height:1.1;
+    background:#000;color:#fff;border:1px solid #fff;border-radius:0;padding:11px 4px;min-width:0;flex:1;
     touch-action:manipulation;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+  #bar button.wide{flex:5;min-width:72px}
+  #bar button.tab{flex:1;min-width:42px;font-size:clamp(12px,3.5vw,15px);padding:9px 4px}
+  #bar button.mic.on{background:#500;color:#fff;border-color:#f88}
   #bar button.on{background:#fff;color:#000}
-  #bar button.wide{flex:1 1 100px;min-width:72px;max-width:none}
-  #bar button.tab{font-size:clamp(11px,3vw,15px);min-width:40px;padding:7px 6px}
-  #bar .panel{display:none;gap:4px;flex-wrap:wrap;justify-content:center}
-  body.showbar #bar.panel-abc #panel-abc{display:flex}
-  body.showbar #bar.panel-123 #panel-123{display:flex}
-  body.showbar #bar.panel-punct #panel-punct{display:flex}
-  body.showbar #bar.panel-accent #panel-accent{display:flex}
   #togglebar{position:fixed;top:6px;right:6px;z-index:6;font-family:"WebPlus IBM VGA","Courier New",monospace;
     font-size:20px;background:#000;color:#fff;border:1px solid #fff;padding:3px 10px;
     touch-action:manipulation;-webkit-tap-highlight-color:transparent}
@@ -57,21 +59,21 @@
     touch-action:manipulation;-webkit-tap-highlight-color:transparent}
   #togglezoom.on{background:#fff;color:#000}
   /* campo nascosto per aprire la tastiera di sistema su mobile */
-  #keyin{position:fixed;left:0;bottom:0;width:2px;height:2px;opacity:.01;border:0;padding:0;
-    background:transparent;color:transparent;font-size:16px;z-index:1;resize:none}
+  #keyin{position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;
+    background:transparent;color:transparent;font-size:16px;z-index:-1;resize:none;overflow:hidden}
 </style>
 </head>
 <body>
 <div id="wrap">
   <div id="scrb"><canvas id="scr"></canvas></div>
-  <div id="bar" class="panel-abc">
-    <div class="row" id="row1"></div>
-    <div class="row" id="row2"></div>
-    <div class="row" id="row3"></div>
-    <div class="row panel" id="panel-abc"></div>
-    <div class="row panel" id="panel-123"></div>
-    <div class="row panel" id="panel-punct"></div>
-    <div class="row panel" id="panel-accent"></div>
+  <div id="bar" class="kb-abc">
+    <div class="kb-row" id="kb-nav"></div>
+    <div class="kb-row" id="kb-space"></div>
+    <div class="kb-row" id="kb-tabs"></div>
+    <div class="kb-panel" id="kb-panel-abc"></div>
+    <div class="kb-panel" id="kb-panel-123"></div>
+    <div class="kb-panel" id="kb-panel-punct"></div>
+    <div class="kb-panel" id="kb-panel-accent"></div>
   </div>
 </div>
 <button id="togglezoom">ZOOM</button>
@@ -142,8 +144,8 @@ const README=
 "\n"+
 "SU TELEFONO/TABLET\n"+
 "  Tocca lo schermo per spostare il cursore.\n"+
-"  TASTIERA a schermo: ABC, 123, punteggiatura, accenti.\n"+
-"  CAPS = maiuscole  SPAZIO  accenti + vocali (es. `+a=à).\n"+
+"  TASTIERA: righe QWERTY, 123, punteggiatura, accenti, CAPS, SPAZIO.\n"+
+"  🎤 dettatura vocale (speech-to-text del browser).\n"+
 "  ZOOM (portrait): testo ingrandito a tutto schermo.\n"+
 "  Con barra aperta non si apre la tastiera Android.\n"+
 "\n"+
@@ -464,6 +466,30 @@ let FS=20, CW=10, CH=24, zoomMode=false, viewHscroll=0, viewCols=COLS, viewRows=
 function isPortrait(){ return innerHeight>innerWidth; }
 function isPortraitZoom(){ return zoomMode&&IS_TOUCH&&isPortrait(); }
 function applyFont(){ cx.font=FS+'px '+FONT; cx.textAlign='center'; cx.textBaseline='middle'; }
+function layoutSize(){
+  const box=document.getElementById('scrb');
+  const W=Math.max(200,box.clientWidth||innerWidth);
+  const H=Math.max(80,box.clientHeight||innerHeight);
+  return {W,H};
+}
+function resetScroll(){
+  window.scrollTo(0,0);
+  document.documentElement.scrollTop=0;
+  document.body.scrollTop=0;
+  const s=document.getElementById('scrb');
+  if(s)s.scrollTop=0;
+}
+function onViewportChange(){
+  const vv=window.visualViewport;
+  if(vv&&IS_TOUCH){
+    const kb=vv.height<window.innerHeight*0.78;
+    document.body.classList.toggle('keyboard-open',kb);
+    if(kb)resetScroll();
+  }else document.body.classList.remove('keyboard-open');
+  fit();
+}
+function drawLimCols(){ return(isPortraitZoom()&&S.mode==='edit')?viewCols:COLS; }
+function drawLimRows(){ return(isPortraitZoom()&&S.mode==='edit')?viewRows:ROWS; }
 function ensureHScroll(){
   if(!isPortraitZoom()||S.mode!=='edit'){ viewHscroll=0; return; }
   if(S.col<viewHscroll)viewHscroll=Math.max(0,S.col-3);
@@ -471,9 +497,8 @@ function ensureHScroll(){
   viewHscroll=Math.max(0,Math.min(viewHscroll,COLS-viewCols));
 }
 function fit(){
-  const box=document.getElementById('scrb');
-  const W=Math.max(200,box.clientWidth||innerWidth);
-  const H=Math.max(140,box.clientHeight||innerHeight);
+  resetScroll();
+  const {W,H}=layoutSize();
   const probe=document.createElement('canvas').getContext('2d');
   probe.font='100px '+FONT;
   const m=probe.measureText('M');
@@ -489,8 +514,7 @@ function fit(){
       applyFont();
       CW=cx.measureText('M').width;
       CH=FS*chu;
-      viewRows=Math.max(ROWS+4,Math.floor(H/CH));
-      viewRows=Math.min(viewRows,64);
+      viewRows=Math.max(6,Math.floor(H/CH)-1);
       ensureHScroll();
       cv.width=Math.round(viewCols*CW*dpr); cv.height=Math.round(viewRows*CH*dpr);
       cv.style.width=Math.round(viewCols*CW)+'px'; cv.style.height=Math.round(viewRows*CH)+'px';
@@ -521,7 +545,8 @@ function fit(){
 }
 let blinkOn=true,lastBlink=0;
 function drawCell(c,r,ch,inv){
-  if(c<0||c>=COLS||r<0||r>=ROWS)return;
+  const mc=drawLimCols(), mr=drawLimRows();
+  if(c<0||c>=mc||r<0||r>=mr)return;
   const x=c*CW,y=r*CH;
   if(inv){
     cx.save(); cx.shadowBlur=0;
@@ -885,6 +910,7 @@ function openFile(name,isDoc){
   S.undoStack.length=0;S.prevPos=null;S.markers=new Array(10).fill(null);S.pending=null;
   S.mode='edit';
   say(exists?'Aperto '+n:'Nuovo file '+n);
+  requestAnimationFrame(fit);
 }
 function doSave(silent){
   if(!S.filename)return;
@@ -1334,7 +1360,13 @@ function loop(t){
 /* ------------------------------ DISPATCH EVENTI TASTIERA ------------------------------ */
 const keyin=document.getElementById('keyin');
 function isBarOpen(){ return document.body.classList.contains('showbar'); }
-function focusKeyin(){ if(IS_TOUCH&&!isBarOpen()){ try{keyin.focus({preventScroll:true});}catch(e){} } }
+function focusKeyin(){
+  if(IS_TOUCH&&!isBarOpen()){
+    resetScroll();
+    try{keyin.focus({preventScroll:true});}catch(e){}
+    requestAnimationFrame(fit);
+  }
+}
 function blurKeyin(){ try{keyin.blur();}catch(e){} }
 function dispatch(e){
   if(e.key==='F12')return;
@@ -1362,7 +1394,11 @@ keyin.addEventListener('input',()=>{
   const t=keyin.value; keyin.value='';
   for(const ch of t){ if(ch>=' ')dispatch({key:ch,code:'',ctrlKey:false,altKey:false,metaKey:false}); }
 });
-keyin.addEventListener('blur',()=>{ if(IS_TOUCH&&!isBarOpen()&&S.mode!=='exit')setTimeout(focusKeyin,80); });
+keyin.addEventListener('focus',()=>{ resetScroll(); requestAnimationFrame(fit); });
+keyin.addEventListener('blur',()=>{
+  if(speechActive)stopSpeech();
+  if(IS_TOUCH&&!isBarOpen()&&S.mode!=='exit')setTimeout(focusKeyin,80);
+});
 
 /* incolla (da menu del browser / Ctrl+V dove consentito) */
 window.addEventListener('paste',e=>{
@@ -1437,12 +1473,23 @@ function typeFromBar(ch){
 }
 function setBarPanel(p){
   barPanel=p;
-  barEl.classList.remove('panel-abc','panel-123','panel-punct','panel-accent');
-  barEl.classList.add('panel-'+p);
+  barEl.classList.remove('kb-abc','kb-123','kb-punct','kb-accent');
+  barEl.classList.add('kb-'+p);
   ['abc','123','punct','accent'].forEach(id=>{
     const t=document.getElementById('tab-'+id);
     if(t)t.classList.toggle('on',id===p);
   });
+}
+function mkKbRow(parent,items,act){
+  const row=document.createElement('div');
+  row.className='kb-row';
+  items.forEach(it=>{
+    const lbl=it[0], ch=it.length>1?it[1]:it[0], wide=it[2], rep=it[3];
+    const b=mkBtn(lbl,()=>act(ch),!!rep,wide?'wide':'');
+    row.appendChild(b);
+  });
+  parent.appendChild(row);
+  return row;
 }
 function startRep(act,b){ stopRep(b); b._t=setTimeout(()=>{ b._i=setInterval(act,90); },400); }
 function stopRep(b){ if(b._t)clearTimeout(b._t); if(b._i)clearInterval(b._i); }
@@ -1455,56 +1502,99 @@ function mkBtn(label,act,rep,cls){
   return b;
 }
 function buildBar(){
-  const r1=document.getElementById('row1');
-  const r2=document.getElementById('row2');
-  const r3=document.getElementById('row3');
-  const pAbc=document.getElementById('panel-abc');
-  const p123=document.getElementById('panel-123');
-  const pPunct=document.getElementById('panel-punct');
-  const pAccent=document.getElementById('panel-accent');
-  r1.appendChild(mkBtn('◄',()=>pressCode('ArrowLeft'),true));
-  r1.appendChild(mkBtn('▲',()=>pressCode('ArrowUp'),true));
-  r1.appendChild(mkBtn('▼',()=>pressCode('ArrowDown'),true));
-  r1.appendChild(mkBtn('►',()=>pressCode('ArrowRight'),true));
-  r1.appendChild(mkBtn('⌫',()=>pressCode('Backspace'),true));
-  r1.appendChild(mkBtn('CANC',()=>pressCode('Delete')));
-  r1.appendChild(mkBtn('INVIO',()=>pressCode('Enter')));
-  r1.appendChild(mkBtn('ESC',()=>pressCode('Escape')));
+  const nav=document.getElementById('kb-nav');
+  const space=document.getElementById('kb-space');
+  const tabs=document.getElementById('kb-tabs');
+  const pAbc=document.getElementById('kb-panel-abc');
+  const p123=document.getElementById('kb-panel-123');
+  const pPunct=document.getElementById('kb-panel-punct');
+  const pAccent=document.getElementById('kb-panel-accent');
+  mkKbRow(nav,[['◄','ArrowLeft',0,1],['▲','ArrowUp',0,1],['▼','ArrowDown',0,1],['►','ArrowRight',0,1],['⌫','Backspace',0,1],['CANC','Delete'],['INVIO','Enter'],['ESC','Escape']],c=>pressCode(c,c==='Enter'?'Enter':c));
   const bc=mkBtn('CTRL',()=>{ ctrlArmed=!ctrlArmed; bc.classList.toggle('on',ctrlArmed); });
   bc.id='btn-ctrl';
   const bCaps=mkBtn('CAPS',()=>{ capsLock=!capsLock; bCaps.classList.toggle('on',capsLock); });
-  r2.appendChild(bc);
-  r2.appendChild(bCaps);
-  r2.appendChild(mkBtn('SALVA',()=>{ pressCtrl('K'); pressPlain('S'); }));
-  r2.appendChild(mkBtn('TROVA',()=>{ pressCtrl('Q'); pressPlain('F'); }));
-  r2.appendChild(mkBtn('AIUTO',()=>{ pressCtrl('G'); }));
-  r2.appendChild(mkBtn('ANNULLA',()=>{ pressCtrl('U'); }));
-  r2.appendChild(mkBtn('INS',()=>toggleIns()));
+  const bMic=mkBtn('🎤',toggleSpeech);
+  bMic.id='btn-mic'; bMic.className='mic';
+  const spRow=document.createElement('div');
+  spRow.className='kb-row';
+  spRow.appendChild(bc); spRow.appendChild(bCaps);
+  spRow.appendChild(mkBtn('SPAZIO',()=>typeFromBar(' '),true,'wide'));
+  spRow.appendChild(bMic);
+  space.appendChild(spRow);
   const tabAbc=mkBtn('ABC',()=>setBarPanel('abc')); tabAbc.id='tab-abc'; tabAbc.className='tab on';
   const tab123=mkBtn('123',()=>setBarPanel('123')); tab123.id='tab-123'; tab123.className='tab';
-  const tabPunct=mkBtn('.,!',()=>setBarPanel('punct')); tabPunct.id='tab-punct'; tabPunct.className='tab';
-  const tabAccent=mkBtn('´`',()=>setBarPanel('accent')); tabAccent.id='tab-accent'; tabAccent.className='tab';
-  r2.appendChild(tabAbc); r2.appendChild(tab123); r2.appendChild(tabPunct); r2.appendChild(tabAccent);
-  r3.appendChild(mkBtn('SPAZIO',()=>typeFromBar(' '),true,'wide'));
+  const tabPunct=mkBtn('.,;!',()=>setBarPanel('punct')); tabPunct.id='tab-punct'; tabPunct.className='tab';
+  const tabAccent=mkBtn('àéì',()=>setBarPanel('accent')); tabAccent.id='tab-accent'; tabAccent.className='tab';
+  tabs.appendChild(tabAbc); tabs.appendChild(tab123); tabs.appendChild(tabPunct); tabs.appendChild(tabAccent);
+  tabs.appendChild(mkBtn('SALVA',()=>{ pressCtrl('K'); pressPlain('S'); }));
+  tabs.appendChild(mkBtn('↶',()=>{ pressCtrl('U'); }));
   const letterAct=ch=>{
     if(ctrlArmed){ pressCtrl(ch); ctrlArmed=false; bc.classList.remove('on'); }
     else typeFromBar(ch);
   };
-  'QWERTYUIOPASDFGHJKLZXCVBNM'.split('').forEach(ch=>pAbc.appendChild(mkBtn(ch,()=>letterAct(ch))));
-  '1234567890'.split('').forEach(ch=>p123.appendChild(mkBtn(ch,()=>typeFromBar(ch))));
-  '.:,;!?-_()/\\@#%&*+=[]{}<>"\'|'.split('').forEach(ch=>pPunct.appendChild(mkBtn(ch,()=>typeFromBar(ch))));
+  mkKbRow(pAbc,'QWERTYUIOP'.split('').map(c=>[c]),letterAct);
+  mkKbRow(pAbc,'ASDFGHJKL'.split('').map(c=>[c]),letterAct);
+  mkKbRow(pAbc,[['Z','Z'],['X','X'],['C','C'],['V','V'],['B','B'],['N','N'],['M','M']],letterAct);
+  mkKbRow(p123,'1234567890'.split('').map(c=>[c]),c=>typeFromBar(c));
+  mkKbRow(pPunct,[['.','.'],[',',','],[';',';'],[':',':'],['!','!'],['?','?'],['-','-'],['_','_'],['(',')'],['/','/'],['\\','\\'],['@','@'],['"','"']],c=>typeFromBar(c));
+  mkKbRow(pPunct,[["'","'"],['+','+'],['=','='],['[',']'],['{','}'],['<','>'],['|','|'],['#','#'],['%','%'],['&','&'],['*','*']],c=>typeFromBar(c));
+  const accRow=document.createElement('div');
+  accRow.className='kb-row';
   [['`','`'],['´',"'"],['^','^'],['¨','"']].forEach(([lbl,key])=>{
     const b=mkBtn(lbl,()=>armAccent(key));
-    b.dataset.accent=key;
-    pAccent.appendChild(b);
+    b.dataset.accent=key; accRow.appendChild(b);
   });
-  'AEIOUaeiou'.split('').forEach(ch=>pAccent.appendChild(mkBtn(ch,()=>{
-    if(accentDead)typeFromBar(ch);
-    else typeFromBar(ch);
-  })));
-  pAccent.appendChild(mkBtn('ESC ACC',()=>{ accentDead=null; updateAccentUI(); }));
+  accRow.appendChild(mkBtn('annulla',()=>{ accentDead=null; updateAccentUI(); }));
+  pAccent.appendChild(accRow);
+  mkKbRow(pAccent,'AEIOU'.split('').map(c=>[c,c]),c=>typeFromBar(c));
+  mkKbRow(pAccent,'aeiou'.split('').map(c=>[c,c]),c=>typeFromBar(c));
   barEl.addEventListener('contextmenu',e=>e.preventDefault());
   setBarPanel('abc');
+}
+const SpeechRec=window.SpeechRecognition||window.webkitSpeechRecognition;
+let speechRec=null, speechActive=false;
+function toggleSpeech(){
+  if(!SpeechRec){ say('Dettatura non supportata'); beep(); return; }
+  if(speechActive){ stopSpeech(); return; }
+  if(S.mode!=='edit'){ say('Apri un documento per dettare'); beep(); return; }
+  speechRec=new SpeechRec();
+  speechRec.lang='it-IT';
+  speechRec.continuous=true;
+  speechRec.interimResults=true;
+  speechRec.onresult=e=>{
+    let fin='', interim='';
+    for(let i=e.resultIndex;i<e.results.length;i++){
+      const t=e.results[i][0].transcript;
+      if(e.results[i].isFinal)fin+=t; else interim+=t;
+    }
+    if(fin&&S.mode==='edit'&&!S.prompt){
+      pushUndo();
+      insertTextRaw(fin);
+      markDirty();
+      ensureVisible();
+    }
+    if(interim||fin)say('Dettatura: '+(fin||interim).slice(0,50));
+  };
+  speechRec.onerror=ev=>{
+    if(ev.error!=='aborted'&&ev.error!=='no-speech')say('Dettatura: '+ev.error);
+    stopSpeech();
+  };
+  speechRec.onend=()=>{
+    if(speechActive){
+      try{speechRec.start();}catch(e){ stopSpeech(); }
+    }
+  };
+  try{
+    speechRec.start();
+    speechActive=true;
+    document.getElementById('btn-mic')?.classList.add('on');
+    say('Dettatura attiva...');
+  }catch(e){ say('Microfono non disponibile'); beep(); }
+}
+function stopSpeech(){
+  speechActive=false;
+  if(speechRec){ try{speechRec.stop();}catch(e){} speechRec=null; }
+  document.getElementById('btn-mic')?.classList.remove('on');
 }
 buildBar();
 const tg=document.getElementById('togglebar');
@@ -1531,8 +1621,11 @@ tg.addEventListener('click',e=>{ e.preventDefault(); setBar(!document.body.class
 tz.addEventListener('pointerdown',e=>e.preventDefault());
 tz.addEventListener('click',e=>{ e.preventDefault(); setZoom(!zoomMode); });
 if(IS_TOUCH){ setBar(true); if(isPortrait())setZoom(true); }
-updateZoomBtn();
-window.addEventListener('resize',updateZoomBtn);
+window.addEventListener('resize',()=>{ updateZoomBtn(); onViewportChange(); });
+if(window.visualViewport){
+  visualViewport.addEventListener('resize',onViewportChange);
+  visualViewport.addEventListener('scroll',onViewportChange);
+}
 document.addEventListener('touchmove',e=>e.preventDefault(),{passive:false});
 window.addEventListener('beforeunload',e=>{ if(S.dirty){ e.preventDefault(); e.returnValue=''; } });
 document.body.addEventListener('dragover',e=>{ e.preventDefault(); });
@@ -1544,8 +1637,7 @@ document.body.addEventListener('drop',async e=>{
 });
 
 /* ------------------------------ AVVIO ------------------------------ */
-window.addEventListener('resize',fit);
-if(window.visualViewport)visualViewport.addEventListener('resize',fit);
+window.addEventListener('resize',()=>{ updateZoomBtn(); fit(); });
 let inited=false;
 function init(){ if(inited)return; inited=true; fit(); requestAnimationFrame(loop); }
 async function bootApp(){
