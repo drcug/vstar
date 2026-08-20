@@ -16,6 +16,8 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="assets/icon-192.png" type="image/png">
 <link rel="apple-touch-icon" href="assets/icon-192.png">
+<script src="google-config.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
   @font-face{
     font-family:"WebPlus IBM VGA";
@@ -60,6 +62,12 @@
     font-size:18px;background:#000;color:#fff;border:1px solid #fff;padding:3px 10px;
     touch-action:manipulation;-webkit-tap-highlight-color:transparent}
   #togglezoom.on{background:#fff;color:#000}
+  #toggledrive{position:fixed;top:6px;left:50%;transform:translateX(-50%);z-index:6;display:none;
+    font-family:"WebPlus IBM VGA","Courier New",monospace;font-size:14px;background:#000;color:#fff;
+    border:1px solid #fff;padding:3px 8px;touch-action:manipulation;-webkit-tap-highlight-color:transparent;
+    max-width:42vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #toggledrive.on{background:#4285f4;color:#fff;border-color:#8ab4f8}
+  #toggledrive.busy{opacity:.7}
   /* campo nascosto per aprire la tastiera di sistema su mobile */
   #keyin{position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;margin:0;
     background:transparent;color:transparent;font-size:16px;z-index:-1;resize:none;overflow:hidden}
@@ -79,6 +87,7 @@
   </div>
 </div>
 <button id="togglezoom">ZOOM</button>
+<button id="toggledrive" title="Google Drive">DRIVE</button>
 <button id="togglebar">⌨ TASTIERA</button>
 <textarea id="keyin" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="enter"></textarea>
 <input type="file" id="fileimport" accept=".cio,.txt,.text,.md,.log" multiple hidden>
@@ -93,6 +102,9 @@ const IDB_NAME='vaaardstar', IDB_VER=1;
 const FONT='"WebPlus IBM VGA","Courier New",monospace';
 const FG='#ffffff';
 const HAS_FSA='showOpenFilePicker' in window;
+const GOOGLE_CLIENT_ID=(window.VAAARDSTAR_GOOGLE&&window.VAAARDSTAR_GOOGLE.clientId)||'';
+const GOOGLE_SCOPE='https://www.googleapis.com/auth/drive.file';
+const DRIVE_FOLDER='VaaardStar';
 const IS_TOUCH=(window.matchMedia&&matchMedia('(pointer:coarse)').matches)||('ontouchstart' in window);
 
 /* ------------------------------ STATO ------------------------------ */
@@ -155,13 +167,241 @@ const README=
 "Nota: alcuni Ctrl (^T ^W ^N) possono essere intercettati\n"+
 "dal browser: usa Ctrl+Backspace per ^T.\n"+
 "I file restano salvati in questo browser (IndexedDB).\n"+
+"G  Collega Google Drive per salvare i file nel cloud.\n"+
 "Installa l'app PWA per lavorare offline e aprire i .cio.\n"+
 "Menu: I importa file  B backup ZIP  U ripristina backup.\n"+
 "Buona scrittura!\n";
 
 let disk=null, diskReady=false, autosaveTimer=null;
+let driveConnected=false, driveToken=null, driveTokenExp=0, driveFolderId=null;
+let driveFileMap={}, driveTokenClient=null, driveTokenWait=null, driveBusy=false;
 const extHandles=new Map();
 const pendingLaunch=[];
+function googleConfigured(){ return !!(GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_ID.indexOf('YOUR_')<0&&GOOGLE_CLIENT_ID.indexOf('.apps.googleusercontent.com')>0); }
+function waitForGoogle(){
+  return new Promise(res=>{
+    if(window.google&&google.accounts)return res();
+    let n=0;
+    const t=setInterval(()=>{ if((window.google&&google.accounts)||++n>80){ clearInterval(t); res(); } },100);
+  });
+}
+function initDriveClient(){
+  if(driveTokenClient||!googleConfigured()||!window.google)return !!driveTokenClient;
+  driveTokenClient=google.accounts.oauth2.initTokenClient({
+    client_id:GOOGLE_CLIENT_ID,
+    scope:GOOGLE_SCOPE,
+    callback:resp=>{
+      const cb=driveTokenWait;
+      driveTokenWait=null;
+      if(!cb)return;
+      if(resp.error)cb(null,resp.error);
+      else cb(resp.access_token,resp.expires_in||3600);
+    }
+  });
+  return true;
+}
+function requestDriveToken(prompt){
+  return new Promise((res,rej)=>{
+    if(!initDriveClient())return rej(new Error('config'));
+    driveTokenWait=(token,errOrSec)=>{
+      if(!token)return rej(new Error(errOrSec||'auth'));
+      driveToken=token;
+      driveTokenExp=Date.now()+errOrSec*1000;
+      res(token);
+    };
+    driveTokenClient.requestAccessToken({prompt:prompt||''});
+  });
+}
+async function driveApi(path,opts,retry){
+  let token=driveToken&&Date.now()<driveTokenExp-60000?driveToken:null;
+  if(!token)token=await requestDriveToken('');
+  const res=await fetch('https://www.googleapis.com/drive/v3/'+path,{
+    ...opts,
+    headers:{Authorization:'Bearer '+token,...(opts&&opts.headers||{})}
+  });
+  if(res.status===401&&!retry){
+    driveToken=null;
+    await requestDriveToken('consent');
+    return driveApi(path,opts,true);
+  }
+  if(!res.ok)throw new Error(await res.text());
+  if(res.status===204)return null;
+  const ct=res.headers.get('content-type')||'';
+  return ct.indexOf('json')>=0?res.json():res.text();
+}
+async function driveUpload(path,opts){
+  let token=driveToken&&Date.now()<driveTokenExp-60000?driveToken:null;
+  if(!token)token=await requestDriveToken('');
+  const res=await fetch('https://www.googleapis.com/upload/drive/v3/'+path,{
+    ...opts,
+    headers:{Authorization:'Bearer '+token,...(opts&&opts.headers||{})}
+  });
+  if(!res.ok)throw new Error(await res.text());
+  return res.json();
+}
+async function ensureDriveFolder(){
+  if(driveFolderId)return driveFolderId;
+  const saved=await idbGetMeta('driveFolderId');
+  if(saved){ driveFolderId=saved; return driveFolderId; }
+  const q="mimeType='application/vnd.google-apps.folder' and name='"+DRIVE_FOLDER+"' and trashed=false";
+  const list=await driveApi('files?q='+encodeURIComponent(q)+'&fields=files(id)&spaces=drive');
+  if(list.files&&list.files.length)driveFolderId=list.files[0].id;
+  else{
+    const created=await driveApi('files',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name:DRIVE_FOLDER,mimeType:'application/vnd.google-apps.folder'})});
+    driveFolderId=created.id;
+  }
+  await idbPutMeta('driveFolderId',driveFolderId);
+  return driveFolderId;
+}
+async function driveDownloadText(id){
+  let token=driveToken&&Date.now()<driveTokenExp-60000?driveToken:null;
+  if(!token)token=await requestDriveToken('');
+  const res=await fetch('https://www.googleapis.com/drive/v3/files/'+id+'?alt=media',{
+    headers:{Authorization:'Bearer '+token}
+  });
+  if(res.status===401){
+    driveToken=null;
+    token=await requestDriveToken('consent');
+    const res2=await fetch('https://www.googleapis.com/drive/v3/files/'+id+'?alt=media',{
+      headers:{Authorization:'Bearer '+token}
+    });
+    if(!res2.ok)throw new Error(await res2.text());
+    return res2.text();
+  }
+  if(!res.ok)throw new Error(await res.text());
+  return res.text();
+}
+async function driveLoadAll(){
+  const folderId=await ensureDriveFolder();
+  const q="'"+folderId+"' in parents and trashed=false";
+  const list=await driveApi('files?q='+encodeURIComponent(q)+'&fields=files(id,name,mimeType)&pageSize=200');
+  const out={};
+  driveFileMap={};
+  for(const f of (list.files||[])){
+    if(f.mimeType==='application/vnd.google-apps.folder')continue;
+    const text=await driveDownloadText(f.id);
+    const name=diskNameFromFile(f.name);
+    out[name]=String(text).replace(/\r\n/g,'\n').replace(/\r/g,'\n');
+    driveFileMap[name]=f.id;
+  }
+  if(!Object.keys(out).length)out['README.CIO']=README;
+  await idbPutMeta('driveFileMap',driveFileMap);
+  return out;
+}
+async function driveSaveFile(name,content){
+  const folderId=await ensureDriveFolder();
+  const fname=(name.indexOf('.')>=0?name:normDiskName(name,true)).toLowerCase();
+  const id=driveFileMap[name];
+  if(id){
+    await driveUpload('files/'+id+'?uploadType=media',{method:'PATCH',
+      headers:{'Content-Type':'text/plain; charset=UTF-8'},body:content});
+    return id;
+  }
+  const boundary='vaaardstar'+Date.now();
+  const meta=JSON.stringify({name:fname,parents:[folderId],mimeType:'text/plain'});
+  const body='--'+boundary+'\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'+meta+
+    '\r\n--'+boundary+'\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n'+content+'\r\n--'+boundary+'--';
+  const created=await driveUpload('files?uploadType=multipart&fields=id,name',{method:'POST',
+    headers:{'Content-Type':'multipart/related; boundary='+boundary},body});
+  driveFileMap[name]=created.id;
+  await idbPutMeta('driveFileMap',driveFileMap);
+  return created.id;
+}
+async function driveDeleteFile(name){
+  const id=driveFileMap[name];
+  if(!id)return;
+  await driveApi('files/'+id,{method:'DELETE'});
+  delete driveFileMap[name];
+  await idbPutMeta('driveFileMap',driveFileMap);
+}
+async function driveRenameFile(oldName,newName){
+  const id=driveFileMap[oldName];
+  const fname=(newName.indexOf('.')>=0?newName:normDiskName(newName,true)).toLowerCase();
+  if(id){
+    await driveApi('files/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name:fname})});
+    driveFileMap[newName]=id;
+    delete driveFileMap[oldName];
+    await idbPutMeta('driveFileMap',driveFileMap);
+  }else if(disk&&disk[newName]!==undefined){
+    await driveSaveFile(newName,disk[newName]);
+  }
+}
+async function syncFromDrive(){
+  driveBusy=true; updateDriveBtn();
+  try{
+    const remote=await driveLoadAll();
+    const local=disk||{};
+    disk=remote;
+    for(const n of Object.keys(local)){
+      if(!(n in disk)){ disk[n]=local[n]; await driveSaveFile(n,local[n]); }
+    }
+    migrateDiskNames();
+    await idbSaveAll(disk);
+  }finally{ driveBusy=false; updateDriveBtn(); }
+}
+async function connectDrive(){
+  if(!googleConfigured()){ say('Configura google-config.js'); beep(); return; }
+  await waitForGoogle();
+  if(!window.google){ say('Google non disponibile'); beep(); return; }
+  try{
+    say('Accesso Google...');
+    await requestDriveToken('consent');
+    await syncFromDrive();
+    driveConnected=true;
+    await idbPutMeta('driveConnected',true);
+    say('Google Drive connesso');
+    updateDriveBtn();
+  }catch(e){
+    say('Accesso Google annullato'); beep();
+  }
+}
+async function disconnectDrive(){
+  driveConnected=false;
+  driveToken=null;
+  await idbPutMeta('driveConnected',false);
+  say('Drive disconnesso (copia locale conservata)');
+  updateDriveBtn();
+}
+function toggleDriveConnection(){
+  if(driveBusy)return;
+  if(driveConnected)askYN('Disconnettere Google Drive? ',y=>{ if(y)disconnectDrive(); });
+  else connectDrive();
+}
+async function tryDriveReconnect(){
+  if(!googleConfigured())return;
+  const want=await idbGetMeta('driveConnected');
+  driveFileMap=await idbGetMeta('driveFileMap')||{};
+  driveFolderId=await idbGetMeta('driveFolderId')||null;
+  if(!want)return;
+  await waitForGoogle();
+  if(!window.google)return;
+  try{
+    await requestDriveToken('');
+    await syncFromDrive();
+    driveConnected=true;
+    updateDriveBtn();
+  }catch(e){
+    driveConnected=false;
+    await idbPutMeta('driveConnected',false);
+    updateDriveBtn();
+  }
+}
+function updateDriveBtn(){
+  const td=document.getElementById('toggledrive');
+  if(!td)return;
+  td.style.display=googleConfigured()?'block':'none';
+  td.classList.toggle('on',driveConnected);
+  td.classList.toggle('busy',driveBusy);
+  td.textContent=driveBusy?'SYNC...':(driveConnected?'DRIVE ✓':'DRIVE');
+  td.title=driveConnected?'Google Drive connesso — clicca per disconnettere':'Collega Google Drive';
+}
+function driveStatusLine(){
+  if(!googleConfigured())return 'Google Drive: configura google-config.js';
+  if(driveBusy)return 'Google Drive: sincronizzazione...';
+  return driveConnected?'Google Drive: CONNESSO (cartella '+DRIVE_FOLDER+')':'G  Collega Google Drive';
+}
 
 function normDiskName(name,isDoc){
   name=(name||'').toUpperCase().trim().replace(/[^A-Z0-9._\-]/g,'').slice(0,12);
@@ -233,6 +473,21 @@ function idbSaveAll(diskObj){
     tx.onerror=()=>rej(tx.error);
   }));
 }
+function idbGetMeta(key){
+  return idbOpen().then(db=>new Promise((res,rej)=>{
+    const req=db.transaction('meta','readonly').objectStore('meta').get(key);
+    req.onsuccess=()=>res(req.result?req.result.value:null);
+    req.onerror=()=>rej(req.error);
+  }));
+}
+function idbPutMeta(key,value){
+  return idbOpen().then(db=>new Promise((res,rej)=>{
+    const tx=db.transaction('meta','readwrite');
+    tx.objectStore('meta').put({key,value});
+    tx.oncomplete=()=>res();
+    tx.onerror=()=>rej(tx.error);
+  }));
+}
 function loadLegacyDisk(){
   let legacy=null;
   try{ legacy=JSON.parse(localStorage.getItem(LS_KEY)); }catch(e){}
@@ -256,11 +511,30 @@ async function initDisk(){
 }
 function saveDisk(){
   if(!disk)return Promise.resolve();
-  return idbSaveAll(disk).catch(()=>{ say('Errore salvataggio disco'); beep(); });
+  const local=idbSaveAll(disk);
+  if(!driveConnected||driveBusy)return local.catch(()=>{ say('Errore salvataggio disco'); beep(); });
+  return local.then(()=>Promise.all(Object.keys(disk).map(n=>driveSaveFile(n,disk[n]).catch(()=>null))))
+    .catch(()=>{ say('Errore salvataggio disco'); beep(); });
 }
 function saveDiskFile(name){
   if(!disk||!(name in disk))return Promise.resolve();
-  return idbPutFile(name,disk[name]).catch(()=>{ say('Errore salvataggio '+name); beep(); });
+  const local=idbPutFile(name,disk[name]);
+  if(!driveConnected||driveBusy)return local.catch(()=>{ say('Errore salvataggio '+name); beep(); });
+  return local.then(()=>driveSaveFile(name,disk[name])).catch(()=>{ say('Errore salvataggio '+name); beep(); });
+}
+function storageDeleteFile(name){
+  delete disk[name];
+  extHandles.delete(name);
+  const local=idbDeleteFile(name);
+  if(!driveConnected)return local;
+  return local.then(()=>driveDeleteFile(name));
+}
+function storageRenameFile(a,b){
+  disk[b]=disk[a]; delete disk[a];
+  if(extHandles.has(a)){ extHandles.set(b,extHandles.get(a)); extHandles.delete(a); }
+  return idbDeleteFile(a).then(()=>idbPutFile(b,disk[b])).then(()=>{
+    if(driveConnected)return driveRenameFile(a,b);
+  });
 }
 function markDirty(){
   S.dirty=true;
@@ -1150,7 +1424,8 @@ const HELP_PAGES=[
 '  CTRL + lettera per i comandi ^ (es. CTRL+K B).','',
 '  Per incollare testo usa il menu del browser.  F2 salva.','',
 '  Formato nativo: .cio (testo Unicode). Importa anche .txt.','',
-'  Menu: I importa  B backup ZIP  U ripristina  P esporta.','',
+'  Menu: I importa  B backup ZIP  U ripristina  G Google Drive.','',
+'  Con Google Drive i file restano nella cartella "'+DRIVE_FOLDER+'".','',
 '  Installa la PWA per lavorare offline e aprire i .cio.'
 ]];
 function openHelp(){ S.helpFrom=S.mode; S.helpPage=0; S.mode='help'; }
@@ -1218,17 +1493,17 @@ function keyOpen(e){
     case 'n': askName('Nome del non-documento? ',n=>openFile(n,false),false); break;
     case 'f': S.mode='dir'; break;
     case 'e': askName('Rinominare quale file? ',a=>{ if(!(a in disk))return noFile(a);
-        askName('Nuovo nome? ',b=>{ if(b in disk)return say('File gia\' esistente'); disk[b]=disk[a]; delete disk[a];
-          if(extHandles.has(a)){ extHandles.set(b,extHandles.get(a)); extHandles.delete(a); }
-          idbDeleteFile(a); saveDiskFile(b); say(a+' rinominato in '+b); }); }); break;
+        askName('Nuovo nome? ',b=>{ if(b in disk)return say('File gia\' esistente');
+          storageRenameFile(a,b).then(()=>say(a+' rinominato in '+b)); }); }); break;
     case 'o': askName('Copiare quale file? ',a=>{ if(!(a in disk))return noFile(a);
         askName('Destinazione? ',b=>{ if(b in disk)return say('File gia\' esistente'); disk[b]=disk[a]; saveDisk(); say(a+' copiato in '+b); }); }); break;
     case 'y': askName('Cancellare quale file? ',a=>{ if(!(a in disk))return noFile(a);
-        askYN('Cancellare '+a+'? ',y=>{ if(y){ delete disk[a]; extHandles.delete(a); idbDeleteFile(a); say(a+' cancellato'); } }); }); break;
+        askYN('Cancellare '+a+'? ',y=>{ if(y)storageDeleteFile(a).then(()=>say(a+' cancellato')); }); }); break;
     case 'p': askName('Esportare quale file? ',a=>{ if(!(a in disk))return noFile(a); printFile(a); },true); break;
     case 'i': importViaFSA(true); break;
     case 'b': exportDiskBackup(); break;
     case 'u': importBackupPicker(); break;
+    case 'g': toggleDriveConnection(); break;
     case 'h': askLevel(); break;
     case 'r': startDos(); break;
     case 'l': say('Drive corrente: A:'); break;
@@ -1372,13 +1647,15 @@ function drawOpen(){
   drawTxt(6,1,'H  Livello di aiuto'); drawTxt(6,32,'O  COPIA un file'); drawTxt(6,58,'I  IMPORTA file');
   drawTxt(7,1,'---Comandi per aprire---'); drawTxt(7,32,'Y  CANCELLA un file'); drawTxt(7,58,'B  Backup ZIP');
   drawTxt(8,1,'D  Apri un documento'); drawTxt(8,32,'U  Ripristina backup'); drawTxt(8,58,'-Opzioni VaaardStar-');
-  drawTxt(9,1,'N  Apri un non-documento'); drawTxt(9,58,'M  Esegui MailMerge');
-  drawTxt(10,58,'S  Esegui SpellStar');
-  drawTxt(11,1,'A: FILE SUL DISCO ('+dateStr()+'):');
+  drawTxt(9,1,'N  Apri un non-documento'); drawTxt(9,32,'G  Google Drive');
+  drawTxt(10,1,driveStatusLine().slice(0,COLS));
+  drawTxt(10,58,'M  Esegui MailMerge');
+  drawTxt(11,58,'S  Esegui SpellStar');
+  drawTxt(12,1,'A: FILE SUL DISCO ('+dateStr()+'):');
   const names=Object.keys(disk).sort();
-  if(!names.length)drawTxt(12,3,'(disco vuoto)');
-  names.slice(0,8).forEach((n,i)=>{ const row=12+i; drawTxt(row,3,n.padEnd(14)+String(fmtSize((disk[n]||'').length)).padStart(7)); registerFileHit(n,row,3); });
-  if(names.length>8)drawTxt(21,3,'...e altri '+(names.length-8));
+  if(!names.length)drawTxt(13,3,'(disco vuoto)');
+  names.slice(0,8).forEach((n,i)=>{ const row=13+i; drawTxt(row,3,n.padEnd(14)+String(fmtSize((disk[n]||'').length)).padStart(7)); registerFileHit(n,row,3); });
+  if(names.length>8)drawTxt(22,3,'...e altri '+(names.length-8));
   drawTxt(23,1,'Digita un comando o clicca un file per aprirlo.');
   bottomLine(false);
 }
@@ -1745,7 +2022,11 @@ tg.addEventListener('pointerdown',e=>e.preventDefault());
 tg.addEventListener('click',e=>{ e.preventDefault(); setBar(!document.body.classList.contains('showbar')); });
 tz.addEventListener('pointerdown',e=>e.preventDefault());
 tz.addEventListener('click',e=>{ e.preventDefault(); setZoom(!zoomMode); });
+const td=document.getElementById('toggledrive');
+td.addEventListener('pointerdown',e=>e.preventDefault());
+td.addEventListener('click',e=>{ e.preventDefault(); toggleDriveConnection(); });
 if(IS_TOUCH){ setBar(true); if(isPortrait())setZoom(true); }
+updateDriveBtn();
 window.addEventListener('resize',()=>{ updateZoomBtn(); onViewportChange(); });
 if(window.visualViewport){
   visualViewport.addEventListener('resize',onViewportChange);
@@ -1772,7 +2053,9 @@ async function bootApp(){
   setupShareTarget();
   registerSW();
   setupLaunchQueue();
+  updateDriveBtn();
   await initDisk();
+  await tryDriveReconnect();
   await processLaunchQueue();
   if(document.fonts&&document.fonts.load)await document.fonts.load('20px '+FONT).catch(()=>{});
   init();

@@ -4,7 +4,7 @@ const ASSETS=[
   './',
   './index.html',
   './vaaard.html',
-  './manifest.webmanifest',
+  './google-config.js',
   './assets/WebPlus_IBM_VGA_9x16.woff',
   './assets/icon-192.png',
   './assets/icon-512.png'
