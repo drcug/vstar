@@ -17,6 +17,8 @@
 <link rel="icon" href="assets/icon-192.png" type="image/png">
 <link rel="apple-touch-icon" href="assets/icon-192.png">
 <script src="google-config.js"></script>
+<script src="js/vs-lib.js"></script>
+<script src="js/vs-features.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
   @font-face{
@@ -41,6 +43,9 @@
   /* ------- barra comandi touch ------- */
   #bar{display:none;flex:0 0 auto;background:#000;border-top:1px solid #444;padding:6px 4px calc(6px + env(safe-area-inset-bottom));flex-direction:column;gap:5px;z-index:4;max-height:46vh;overflow-y:auto;-webkit-overflow-scrolling:touch}
   body.showbar #bar{display:flex}
+  body.text-only #bar{display:none!important}
+  body.text-only.showbar #togglebar{opacity:.55}
+  body.dirty-doc #togglebar{box-shadow:0 0 0 2px #f80}
   #bar .kb-row{display:flex;gap:4px;width:100%;flex-shrink:0}
   #bar .kb-panel{display:none;flex-direction:column;gap:4px;width:100%;flex-shrink:0}
   body.showbar #bar.kb-abc #kb-panel-abc{display:flex}
@@ -72,6 +77,11 @@
     font-size:14px;background:#000;color:#fff;border:1px solid #fff;padding:3px 8px;
     touch-action:manipulation;-webkit-tap-highlight-color:transparent}
   #togglefs.on{background:#fff;color:#000}
+  #toggletext{position:fixed;top:42px;left:6px;z-index:6;display:none;font-family:"WebPlus IBM VGA","Courier New",monospace;
+    font-size:14px;background:#000;color:#fff;border:1px solid #fff;padding:3px 8px;
+    touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+  #toggletext.on{background:#fff;color:#000}
+  #sr-live{position:fixed;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
   #opt-google-panel{display:none;position:fixed;left:50%;top:46%;transform:translate(-50%,-50%);z-index:7;
     flex-direction:column;align-items:center;gap:10px;pointer-events:auto}
   #btn-google-login{font-family:Roboto,Arial,sans-serif;font-size:15px;padding:11px 22px;background:#4285f4;
@@ -97,10 +107,12 @@
     <div class="kb-row" id="kb-space"></div>
   </div>
 </div>
-<button id="togglezoom">ZOOM</button>
-<button id="toggledrive" title="Google Drive">DRIVE</button>
-<button id="togglefs" title="Schermo intero">⛶ FULL</button>
-<button id="togglebar">⌨ TASTIERA</button>
+<button id="togglezoom" aria-label="Zoom testo">ZOOM</button>
+<button id="toggletext" aria-label="Solo testo">TESTO</button>
+<button id="toggledrive" title="Google Drive" aria-label="Opzioni Google Drive">DRIVE</button>
+<button id="togglefs" title="Schermo intero" aria-label="Schermo intero">⛶ FULL</button>
+<button id="togglebar" aria-label="Mostra tastiera a video">⌨ TASTIERA</button>
+<div id="sr-live" role="status" aria-live="polite" aria-atomic="true"></div>
 <textarea id="keyin" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="enter"></textarea>
 <input type="file" id="fileimport" accept=".cio,.txt,.text,.md,.log" multiple hidden>
 <input type="file" id="zipimport" accept=".zip,application/zip" hidden>
@@ -115,9 +127,10 @@
 <script>
 'use strict';
 /* ------------------------------ COSTANTI ------------------------------ */
-const COLS=80, ROWS=25, RM=65, PAGE_LEN=66, LS_KEY='vaaardstar_disk';
+const COLS=80, ROWS=25, PAGE_LEN=66, LS_KEY='vaaardstar_disk';
 const EXT='.CIO', MIME_CIO='application/x-vaaardstar+cio';
-const IDB_NAME='vaaardstar', IDB_VER=1;
+const IDB_NAME='vaaardstar', IDB_VER=2;
+function getRM(){ return VSF?VSF.cfg.wrapMargin:65; }
 const FONT='"WebPlus IBM VGA","Courier New",monospace';
 const FG='#ffffff';
 const HAS_FSA='showOpenFilePicker' in window;
@@ -139,8 +152,10 @@ const S={
   lastFind:'', lastRepl:'',
   helpPage:0,
   dosLines:[], dosInput:'', dosFrom:'open',
-  undoStack:[], bootAt:Date.now()
+  undoStack:[], bootAt:Date.now(),
+  optPage:0
 };
+let optPage=0;
 
 /* ------------------------------ DISCO VIRTUALE (IndexedDB) ------------------------------ */
 const README=
@@ -360,6 +375,7 @@ function showGoogleLoginPanel(show){
   if(p)p.style.display=show?'flex':'none';
 }
 function openOptions(){
+  optPage=0;
   S.mode='options';
   say('');
   showGoogleLoginPanel(googleConfigured()&&!driveConnected&&!driveBusy);
@@ -374,13 +390,35 @@ async function syncFromDrive(){
   try{
     const remote=await driveLoadAll();
     const local=disk||{};
-    disk=remote;
+    const conflicts=[];
+    for(const n of Object.keys(remote)){
+      if(n in local&&local[n]!==remote[n]){
+        const lh=VSLib.simpleHash(local[n]), rh=VSLib.simpleHash(remote[n]);
+        if(lh!==rh){
+          if(local[n].length>=remote[n].length){ disk[n]=local[n]; await driveSaveFile(n,local[n]); }
+          else{
+            const cn=n.replace(/\./,'')+'X.CIO';
+            let i=1, fn=cn;
+            while(disk[fn]){ fn=cn.slice(0,8)+i+++'.CIO'; }
+            disk[fn]=local[n];
+            disk[n]=remote[n];
+            conflicts.push(n+'→'+fn);
+          }
+        }
+      }
+    }
+    for(const n of Object.keys(remote))if(!(n in disk))disk[n]=remote[n];
     for(const n of Object.keys(local)){
-      if(!(n in disk)){ disk[n]=local[n]; await driveSaveFile(n,local[n]); }
+      if(!(n in disk)){ disk[n]=local[n]; if(driveSyncEnabled(n))await driveSaveFile(n,local[n]); }
     }
     migrateDiskNames();
     await idbSaveAll(disk);
+    if(conflicts.length)say('Conflitti: copie locali in '+conflicts.join(', '));
   }finally{ driveBusy=false; updateDriveBtn(); }
+}
+function driveSyncEnabled(name){
+  if(!VSF||VSF.cfg.driveSyncAll)return true;
+  return VSF.cfg.driveSyncFiles[name]!==false;
 }
 async function connectDrive(){
   if(!googleConfigured()){ say('Configura google-config.js (vedi Opzioni)'); beep(); return; }
@@ -476,10 +514,49 @@ function idbOpen(){
       const db=e.target.result;
       if(!db.objectStoreNames.contains('files'))db.createObjectStore('files',{keyPath:'name'});
       if(!db.objectStoreNames.contains('meta'))db.createObjectStore('meta',{keyPath:'key'});
+      if(!db.objectStoreNames.contains('versions')){
+        const vs=db.createObjectStore('versions',{keyPath:'id',autoIncrement:true});
+        vs.createIndex('file','file',{unique:false});
+      }
     };
     r.onsuccess=()=>res(r.result);
     r.onerror=()=>rej(r.error);
   });
+}
+function idbPutVersion(name,content,ts){
+  return idbOpen().then(db=>new Promise((res,rej)=>{
+    const tx=db.transaction('versions','readwrite');
+    tx.objectStore('versions').add({file:name,content,ts:ts||Date.now()});
+    tx.oncomplete=()=>res();
+    tx.onerror=()=>rej(tx.error);
+  }));
+}
+function idbListVersions(name){
+  return idbOpen().then(db=>new Promise((res,rej)=>{
+    const tx=db.transaction('versions','readonly');
+    const req=tx.objectStore('versions').index('file').getAll(name);
+    req.onsuccess=()=>res((req.result||[]).sort((a,b)=>b.ts-a.ts));
+    req.onerror=()=>rej(req.error);
+  }));
+}
+function idbTrimVersions(name,keep){
+  return idbListVersions(name).then(list=>{
+    if(list.length<=keep)return;
+    return idbOpen().then(db=>new Promise((res,rej)=>{
+      const tx=db.transaction('versions','readwrite');
+      const st=tx.objectStore('versions');
+      list.slice(keep).forEach(v=>st.delete(v.id));
+      tx.oncomplete=()=>res();
+      tx.onerror=()=>rej(tx.error);
+    }));
+  });
+}
+function idbRestoreVersion(id){
+  return idbOpen().then(db=>new Promise((res,rej)=>{
+    const req=db.transaction('versions','readonly').objectStore('versions').get(id);
+    req.onsuccess=()=>res(req.result||null);
+    req.onerror=()=>rej(req.error);
+  }));
 }
 function idbLoadAll(){
   return idbOpen().then(db=>new Promise((res,rej)=>{
@@ -560,13 +637,14 @@ function saveDisk(){
   if(!disk)return Promise.resolve();
   const local=idbSaveAll(disk);
   if(!driveConnected||driveBusy)return local.catch(()=>{ say('Errore salvataggio disco'); beep(); });
-  return local.then(()=>Promise.all(Object.keys(disk).map(n=>driveSaveFile(n,disk[n]).catch(()=>null))))
+  const syncNames=Object.keys(disk).filter(driveSyncEnabled);
+  return local.then(()=>Promise.all(syncNames.map(n=>driveSaveFile(n,disk[n]).catch(()=>null))))
     .catch(()=>{ say('Errore salvataggio disco'); beep(); });
 }
 function saveDiskFile(name){
   if(!disk||!(name in disk))return Promise.resolve();
   const local=idbPutFile(name,disk[name]);
-  if(!driveConnected||driveBusy)return local.catch(()=>{ say('Errore salvataggio '+name); beep(); });
+  if(!driveConnected||driveBusy||!driveSyncEnabled(name))return local.catch(()=>{ say('Errore salvataggio '+name); beep(); });
   return local.then(()=>driveSaveFile(name,disk[name])).catch(()=>{ say('Errore salvataggio '+name); beep(); });
 }
 function storageDeleteFile(name){
@@ -585,7 +663,11 @@ function storageRenameFile(a,b){
 }
 function markDirty(){
   S.dirty=true;
+  document.body.classList.add('dirty-doc');
   scheduleAutosave();
+}
+function clearDirtyUI(){
+  document.body.classList.remove('dirty-doc');
 }
 function scheduleAutosave(){
   if(autosaveTimer)clearTimeout(autosaveTimer);
@@ -763,6 +845,11 @@ async function processLaunchQueue(){
         extHandles.set(name,item.handle);
       }else if(item.file){
         await importFromFile(item.file,!!item.open);
+      }else if(item.sharedText){
+        const name='SHARED'+EXT;
+        disk[name]=String(item.sharedText).replace(/\r/g,'');
+        await saveDiskFile(name);
+        if(item.open)openFile(name,true);
       }
     }catch(e){}
   }
@@ -778,8 +865,13 @@ function setupLaunchQueue(){
 }
 function setupShareTarget(){
   const q=new URLSearchParams(location.search);
-  if(q.get('share-target')!=='1')return;
-  history.replaceState(null,'',location.pathname);
+  const text=(q.get('text')||'').trim()||(q.get('title')||'').trim();
+  if(text){
+    history.replaceState(null,'',location.pathname);
+    pendingLaunch.push({sharedText:text,open:true});
+    return;
+  }
+  if(q.get('share-target')==='1')history.replaceState(null,'',location.pathname);
 }
 function registerSW(){
   if('serviceWorker' in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});
@@ -922,7 +1014,10 @@ function canvasToCell(clientX,clientY){
 function hitTestFile(row,col){
   for(let i=0;i<fileListHits.length;i++){
     const h=fileListHits[i];
-    if(h.row===row&&col>=h.colStart&&col<h.colEnd)return h.name;
+    if(h.row===row&&col>=h.colStart&&col<h.colEnd){
+      if(h.name.indexOf('recent:')===0)return h.name.slice(7);
+      return h.name;
+    }
   }
   return null;
 }
@@ -945,15 +1040,54 @@ function handleOptionsClick(clientX,clientY){
   if(act==='disconnect'){ askYN('Disconnettere Google Drive? ',y=>{ if(y)disconnectDrive(); }); return true; }
   if(act==='connect'){ connectDrive(); return true; }
   if(act==='fullscreen'){ toggleFullscreen(); return true; }
+  if(act==='textonly'){ setTextOnly(!document.body.classList.contains('text-only')); return true; }
+  if(act==='restorever'){ restoreFileVersion(); return true; }
+  if(act&&act.indexOf('toggle:')===0){ optToggle(act.slice(7)); return true; }
+  if(act==='vol-'){ setVolume(Math.max(0,VSF.cfg.soundVolume-0.1)); return true; }
+  if(act==='vol+'){ setVolume(Math.min(1,VSF.cfg.soundVolume+0.1)); return true; }
+  if(act==='prof'){ cycleSoundProfile(); return true; }
+  if(act==='margin-'){ setWrapMargin(VSF.cfg.wrapMargin-1); return true; }
+  if(act==='margin+'){ setWrapMargin(VSF.cfg.wrapMargin+1); return true; }
+  if(act==='help-'){ setHelpLevel(VSF.cfg.helpLevel-1); return true; }
+  if(act==='help+'){ setHelpLevel(VSF.cfg.helpLevel+1); return true; }
+  if(act==='syncall'){ VSF.cfg.driveSyncAll=!VSF.cfg.driveSyncAll; VSF.save(idbPutMeta); say('Sync tutti: '+(VSF.cfg.driveSyncAll?'ON':'OFF')); return true; }
+  if(act&&act.indexOf('syncfile:')===0){
+    const fn=act.slice(9);
+    const on=VSF.cfg.driveSyncAll||VSF.cfg.driveSyncFiles[fn]!==false;
+    VSF.cfg.driveSyncAll=false;
+    VSF.cfg.driveSyncFiles[fn]=!on;
+    VSF.save(idbPutMeta);
+    say(fn+' sync '+(VSF.cfg.driveSyncFiles[fn]!==false?'ON':'OFF'));
+    return true;
+  }
+  if(act==='pageprev'){ optPage=Math.max(0,optPage-1); return true; }
+  if(act==='pagenext'){ optPage=Math.min(3,optPage+1); return true; }
   return false;
 }
+function optToggle(key){
+  if(key==='ruler'){ VSF.cfg.ruler=!VSF.cfg.ruler; S.ruler=VSF.cfg.ruler; }
+  else if(key==='wrap'){ VSF.cfg.wrapOn=!VSF.cfg.wrapOn; S.wrapOn=VSF.cfg.wrapOn; }
+  else if(key==='keys')VSF.cfg.soundKeys=!VSF.cfg.soundKeys;
+  else if(key==='disk')VSF.cfg.soundDisk=!VSF.cfg.soundDisk;
+  else if(key==='boot')VSF.cfg.soundBoot=!VSF.cfg.soundBoot;
+  else if(key==='haptic')VSF.cfg.haptic=!VSF.cfg.haptic;
+  VSF.save(idbPutMeta);
+}
+function setVolume(v){ VSF.cfg.soundVolume=Math.max(0,Math.min(1,Math.round(v*10)/10)); VSF.save(idbPutMeta); say('Volume '+Math.round(VSF.cfg.soundVolume*100)+'%'); }
+function cycleSoundProfile(){
+  const p=['classic','xt','silent'];
+  const i=(p.indexOf(VSF.cfg.soundProfile)+1)%p.length;
+  VSF.cfg.soundProfile=p[i]; VSF.save(idbPutMeta); say('Profilo suono: '+p[i].toUpperCase());
+}
+function setWrapMargin(m){ VSF.cfg.wrapMargin=Math.max(40,Math.min(78,m)); VSF.save(idbPutMeta); say('Margine riforma: '+VSF.cfg.wrapMargin); }
+function setHelpLevel(n){ VSF.cfg.helpLevel=Math.max(0,Math.min(3,n)); S.helpLevel=VSF.cfg.helpLevel; VSF.save(idbPutMeta); say('Aiuto livello '+VSF.cfg.helpLevel); }
 function handleFileListClick(clientX,clientY){
   if(handleOptionsClick(clientX,clientY))return true;
   if(!disk||(S.mode!=='open'&&S.mode!=='dir'))return false;
   const {row,col}=canvasToCell(clientX,clientY);
   const name=hitTestFile(row,col);
   if(!name)return false;
-  openFile(name,!name.endsWith('.DAT'));
+  openFileSafe(name,!name.endsWith('.DAT'));
   return true;
 }
 function center(r,s){ drawTxt(r,Math.max(0,Math.floor((COLS-s.length)/2)),s); }
@@ -997,7 +1131,10 @@ function beep(f,d){
   o.start(); o.stop(ac.currentTime+(d||0.06));
 }
 function playKeyClick(kind){
+  if(!VSF||VSF.cfg.soundProfile==='silent'||!VSF.cfg.soundKeys)return;
+  VSF.haptic(kind==='space'?12:8);
   const ac=ensureAC(); if(!ac)return;
+  const mul=VSF.profileMul('key'), v=VSF.vol(1)*mul;
   const t=ac.currentTime;
   const out=ac.createGain();
   out.connect(ac.destination);
@@ -1012,7 +1149,7 @@ function playKeyClick(kind){
   const nF=ac.createBiquadFilter();
   nF.type='highpass'; nF.frequency.value=kind==='soft'?900:1400;
   const nG=ac.createGain();
-  nG.gain.setValueAtTime(kind==='soft'?0.035:0.075,t);
+  nG.gain.setValueAtTime((kind==='soft'?0.035:0.075)*v,t);
   nG.gain.exponentialRampToValueAtTime(0.001,t+0.014);
   noise.connect(nF); nF.connect(nG); nG.connect(out);
   noise.start(t); noise.stop(t+0.016);
@@ -1021,7 +1158,7 @@ function playKeyClick(kind){
   osc.frequency.setValueAtTime(pitch,t);
   osc.frequency.exponentialRampToValueAtTime(Math.max(60,pitch*0.55),t+dur);
   const oG=ac.createGain();
-  oG.gain.setValueAtTime(kind==='soft'?0.05:0.11,t);
+  oG.gain.setValueAtTime((kind==='soft'?0.05:0.11)*v,t);
   oG.gain.exponentialRampToValueAtTime(0.001,t+dur);
   osc.connect(oG); oG.connect(out);
   osc.start(t); osc.stop(t+dur+0.01);
@@ -1030,17 +1167,20 @@ function playKeyClick(kind){
     ring.type='sine';
     ring.frequency.value=4100+Math.random()*900;
     const rG=ac.createGain();
-    rG.gain.setValueAtTime(0.018,t);
+    rG.gain.setValueAtTime(0.018*v,t);
     rG.gain.exponentialRampToValueAtTime(0.001,t+0.02);
     ring.connect(rG); rG.connect(out);
     ring.start(t); ring.stop(t+0.022);
   }
 }
 function playDiskDrive(mode){
+  if(!VSF||!VSF.cfg.soundDisk||VSF.cfg.soundProfile==='silent')return;
+  VSF.haptic(18);
   const ac=ensureAC(); if(!ac)return;
+  const mul=VSF.profileMul('disk'), v=VSF.vol(0.38)*mul;
   const t=ac.currentTime;
   const out=ac.createGain();
-  out.gain.value=0.38;
+  out.gain.value=v;
   out.connect(ac.destination);
   const seek=ac.createOscillator();
   seek.type='square';
@@ -1106,7 +1246,24 @@ function keyClickFor(e){
   if(e.key&&e.key.length===1&&e.key>=' ')return playKeyClick('normal');
   if(e.key&&e.key.length===1)return playKeyClick('soft');
 }
-function say(m){ S.msg=m; }
+function playBootSound(){
+  if(!VSF||!VSF.cfg.soundBoot||VSF.cfg.soundProfile==='silent')return;
+  const ac=ensureAC(); if(!ac)return;
+  const v=VSF.vol(0.04), t=ac.currentTime;
+  [880,660,523].forEach((f,i)=>{
+    const o=ac.createOscillator(), g=ac.createGain();
+    o.type='square'; o.frequency.value=f;
+    g.gain.setValueAtTime(v,t+i*0.08);
+    g.gain.exponentialRampToValueAtTime(0.001,t+i*0.08+0.12);
+    o.connect(g); g.connect(ac.destination);
+    o.start(t+i*0.08); o.stop(t+i*0.08+0.14);
+  });
+}
+function say(m){
+  S.msg=m;
+  const el=document.getElementById('sr-live');
+  if(el&&m)el.textContent=m;
+}
 
 /* ------------------------------ UTILITA' CURSORE/TESTO ------------------------------ */
 function cur(){ return {ln:S.ln,col:S.col}; }
@@ -1215,10 +1372,10 @@ function placeCursorAt(clientX,clientY){
 function pushUndo(){ S.undoStack.push({doc:S.doc.slice(),ln:S.ln,col:S.col}); if(S.undoStack.length>200)S.undoStack.shift(); }
 function undo(){ const u=S.undoStack.pop(); if(!u){beep();return;} S.doc=u.doc;S.ln=u.ln;S.col=u.col;markDirty();clampCursor();ensureVisible();say('Annullato'); }
 function wrapLine(li){
-  const line=S.doc[li]||'';
-  if(line.length<=RM)return;
+  const line=S.doc[li]||'', rm=getRM();
+  if(line.length<=rm)return;
   let sp=-1;
-  for(let i=Math.min(RM,line.length-1);i>=0;i--){ if(line[i]===' '){sp=i;break;} }
+  for(let i=Math.min(rm,line.length-1);i>=0;i--){ if(line[i]===' '){sp=i;break;} }
   if(sp<=0){
     if(line.length>=COLS){ S.doc[li]=line.slice(0,COLS-1); if(S.ln===li&&S.col>COLS-1)S.col=COLS-1; }
     return;
@@ -1235,7 +1392,7 @@ function wrapLine(li){
   }
   if(S.ln===li&&S.col>sp){ S.ln=li+1; S.col-=sp+1; }
   else if(S.ln===li+1){ S.col+=added; }
-  if((S.doc[li+1]||'').length>RM)wrapLine(li+1);
+  if((S.doc[li+1]||'').length>getRM())wrapLine(li+1);
 }
 function typeChar(ch){
   let line=S.doc[S.ln]||'';
@@ -1307,13 +1464,13 @@ function reformat(){
   let s=S.ln; while(s>0&&(S.doc[s-1]||'').trim()!=='')s--;
   let e=S.ln; while(e<S.doc.length-1&&(S.doc[e+1]||'').trim()!=='')e++;
   const words=S.doc.slice(s,e+1).map(t=>t.trim()).filter(Boolean).join(' ');
-  const out=[]; let line='';
+  const out=[]; let line=''; const rm=getRM();
   for(const w of words.split(/\s+/)){
     if(!w)continue;
     if(!line)line=w;
-    else if((line+' '+w).length<=RM)line+=' '+w;
+    else if((line+' '+w).length<=rm)line+=' '+w;
     else{ out.push(line); line=w; }
-    while(line.length>RM){ out.push(line.slice(0,RM)); line=line.slice(RM); }
+    while(line.length>rm){ out.push(line.slice(0,rm)); line=line.slice(rm); }
   }
   out.push(line);
   S.doc.splice(s,e-s+1,...out);
@@ -1445,6 +1602,14 @@ function handlePrompt(e){
 }
 
 /* ------------------------------ FILE: salva/apri/stampa ------------------------------ */
+function checkUnsaved(then){
+  if(S.mode==='edit'&&S.dirty&&S.filename){
+    askYN('Salvare '+S.filename+' prima di continuare? ',ans=>{
+      if(ans){ doSave(true); clearDirtyUI(); then(); }
+      else{ S.dirty=false; clearDirtyUI(); then(); }
+    });
+  }else then();
+}
 function openFile(name,isDoc){
   const n=normDiskName(name,isDoc);
   const exists=n in disk;
@@ -1454,18 +1619,24 @@ function openFile(name,isDoc){
   S.doc=exists?(disk[n]||'').split(/\r?\n/):[''];
   if(!S.doc.length)S.doc=[''];
   S.ln=0;S.col=0;S.top=0;S.blk=null;S.blkVis=true;S.dirty=false;
+  clearDirtyUI();
   S.undoStack.length=0;S.prevPos=null;S.markers=new Array(10).fill(null);S.pending=null;
   S.mode='edit';
+  if(VSF){ VSF.pushRecent(n); VSF.save(idbPutMeta); }
   say(exists?'Aperto '+n:'Nuovo file '+n);
   requestAnimationFrame(fit);
 }
-function doSave(silent){
+function openFileSafe(name,isDoc){ checkUnsaved(()=>openFile(name,isDoc)); }
+async function doSave(silent){
   if(!S.filename)return;
   if(!silent)playDiskDrive('write');
-  disk[S.filename]=S.doc.join('\r\n');
+  const content=S.doc.join('\r\n');
+  if(VSF)await VSF.saveVersion(idbPutVersion,S.filename,content,VSF.cfg.versionKeep);
+  disk[S.filename]=content;
   saveDiskFile(S.filename);
   writeExternalIfLinked(S.filename);
   S.dirty=false;
+  clearDirtyUI();
   if(!silent)say('Salvato '+S.filename);
 }
 function saveFile(next){
@@ -1474,14 +1645,63 @@ function saveFile(next){
   doSave(); finish();
 }
 function abandon(){
-  if(S.dirty)askYN('Abbandonare le modifiche a '+S.filename+'? ',y=>{ if(y){S.mode='open';say('');} });
+  if(S.dirty)askYN('Abbandonare le modifiche a '+S.filename+'? ',y=>{ if(y){S.dirty=false;clearDirtyUI();S.mode='open';say('');} });
   else{ S.mode='open'; say(''); }
 }
 function noFile(n){ say(n+': file non trovato'); beep(); }
 function printFile(n){
   if(!(n in disk))return noFile(n);
-  say('Esportazione di '+n+' ...');
-  exportViaFSA(n);
+  askYN('Stampare '+n+' (anteprima)? S=Stampa N=Esporta ',y=>{
+    if(y){ if(VSF.printDocument(n,disk[n],FONT.replace(/"/g,'')))say('Anteprima stampa'); else beep(); }
+    else{ say('Esportazione di '+n+' ...'); exportViaFSA(n); }
+  });
+}
+function runSpellStar(){
+  askName('Controllare ortografia di quale file? ',n=>{
+    if(!(n in disk))return noFile(n);
+    const bad=VSLib.spellUnknown(disk[n]||'');
+    if(!bad.length)say('SpellStar: nessun errore rilevato');
+    else say('SpellStar: '+bad.slice(0,8).join(' ')+(bad.length>8?' ... ('+bad.length+')':''));
+  },true);
+}
+function runMailMerge(){
+  askName('File modello (con {CAMPO})? ',tpl=>{
+    if(!(tpl in disk))return noFile(tpl);
+    askName('File dati CSV? ',dat=>{
+      if(!(dat in disk))return noFile(dat);
+      askName('Prefisso output? ',pre=>{
+        const prefx=normDiskName(pre,true).replace(/\..*$/,'');
+        const merged=VSLib.mergeAll(disk[tpl],disk[dat]);
+        if(!merged.length){ say('Nessuna riga dati'); beep(); return; }
+        merged.forEach((m,i)=>{
+          const fn=(prefx+String(i+1).padStart(2,'0')).slice(0,8)+EXT;
+          disk[fn]=m.content;
+        });
+        saveDisk().then(()=>say('MailMerge: '+merged.length+' file creati'));
+      },true);
+    },true);
+  },true);
+}
+function showWordCount(){
+  const text=S.mode==='edit'?S.doc.join('\n'):'';
+  const src=text|| (S.filename&&disk[S.filename]?disk[S.filename]:'');
+  const c=VSLib.countWords(src);
+  say('Parole:'+c.words+'  Caratteri:'+c.chars+'  Righe:'+c.lines);
+}
+function restoreFileVersion(){
+  askName('Ripristinare versione di quale file? ',async n=>{
+    if(!(n in disk))return noFile(n);
+    const list=await idbListVersions(n);
+    if(!list.length){ say('Nessuna versione salvata'); beep(); return; }
+    const v=list[0];
+    askYN('Ripristinare versione del '+new Date(v.ts).toLocaleString()+'? ',y=>{
+      if(!y)return;
+      disk[n]=v.content;
+      saveDiskFile(n);
+      if(S.filename===n&&S.mode==='edit'){ S.doc=v.content.split(/\r?\n/); S.dirty=true; markDirty(); }
+      say('Versione ripristinata');
+    });
+  },true);
 }
 
 /* ------------------------------ SOTTOMENU ^K ^Q ^O ------------------------------ */
@@ -1517,6 +1737,7 @@ function handleQ(ch){
     case 'C': docEnd(); break;
     case 'W': scroll(-1); break;
     case 'Z': scroll(1); break;
+    case 'N': showWordCount(); break;
     case 'P': gotoPrev(); break;
     case 'B': { const b=normBlock(); if(b){savePrev();gotoPos(b.a);}else beep(); break; }
     case 'K': { const b=normBlock(); if(b){savePrev();gotoPos(b.b);}else beep(); break; }
@@ -1676,8 +1897,8 @@ function keyOpen(e){
   if(e.ctrlKey)return;
   const k=(e.key||'').toLowerCase();
   switch(k){
-    case 'd': askName('Nome del file da modificare? ',n=>openFile(n,true),true); break;
-    case 'n': askName('Nome del non-documento? ',n=>openFile(n,false),false); break;
+    case 'd': askName('Nome del file da modificare? ',n=>openFileSafe(n,true),true); break;
+    case 'n': askName('Nome del non-documento? ',n=>openFileSafe(n,false),false); break;
     case 'f': S.mode='dir'; break;
     case 'e': askName('Rinominare quale file? ',a=>{ if(!(a in disk))return noFile(a);
         askName('Nuovo nome? ',b=>{ if(b in disk)return say('File gia\' esistente');
@@ -1694,8 +1915,8 @@ function keyOpen(e){
     case 'h': askLevel(); break;
     case 'r': startDos(); break;
     case 'l': say('Drive corrente: A:'); break;
-    case 'm': say('MailMerge non installato'); break;
-    case 's': say('SpellStar non installato'); break;
+    case 'm': runMailMerge(); break;
+    case 's': runSpellStar(); break;
     case 'x': askYN('Uscire da VaaardStar? ',y=>{ if(y)S.mode='exit'; }); break;
     default: if(k.length===1&&k>=' ')beep();
   }
@@ -1835,55 +2056,91 @@ function drawOpen(){
   drawTxt(7,1,'---Comandi per aprire---'); drawTxt(7,32,'Y  CANCELLA un file'); drawTxt(7,58,'B  Backup ZIP');
   drawTxt(8,1,'D  Apri un documento'); drawTxt(8,32,'U  Ripristina backup'); drawTxt(8,58,'V  Opzioni VaaardStar');
   drawTxt(9,1,'N  Apri un non-documento');
-  drawTxt(10,1,driveStatusLine().slice(0,COLS));
-  drawTxt(10,58,'M  Esegui MailMerge');
-  drawTxt(11,58,'S  Esegui SpellStar');
-  drawTxt(12,1,'A: FILE SUL DISCO ('+dateStr()+'):');
+  drawTxt(10,1,driveStatusLine().slice(0,52));
+  drawTxt(10,58,'M  MailMerge');
+  drawTxt(11,1,'S  SpellStar (^QN parole in edit)');
+  const recent=(VSF&&VSF.cfg.recentFiles||[]).filter(n=>disk&&n in disk).slice(0,3);
+  if(recent.length){
+    drawTxt(12,1,'RECENTI:');
+    recent.forEach((n,i)=>{ const row=12; drawTxt(row,10+i*14,n.padEnd(12)); registerFileHit('recent:'+n,row,10+i*14); });
+  }
+  drawTxt(13,1,'A: FILE SUL DISCO ('+dateStr()+'):');
   const names=Object.keys(disk).sort();
-  if(!names.length)drawTxt(13,3,'(disco vuoto)');
-  names.slice(0,8).forEach((n,i)=>{ const row=13+i; drawTxt(row,3,n.padEnd(14)+String(fmtSize((disk[n]||'').length)).padStart(7)); registerFileHit(n,row,3); });
-  if(names.length>8)drawTxt(22,3,'...e altri '+(names.length-8));
+  if(!names.length)drawTxt(14,3,'(disco vuoto)');
+  names.slice(0,7).forEach((n,i)=>{ const row=14+i; const tag=extHandles.has(n)?'*':''; drawTxt(row,3,(n+tag).padEnd(14)+String(fmtSize((disk[n]||'').length)).padStart(7)); registerFileHit(n,row,3); });
+  if(names.length>7)drawTxt(22,3,'...e altri '+(names.length-7));
   drawTxt(23,1,'Digita un comando o clicca un file per aprirlo.');
   bottomLine(false);
 }
+function statusStr(){
+  const star=S.dirty?'* NON SALVATO ':'';
+  const fn=S.filename?(star+S.filename+'  '):'';
+  return fn+'Col '+(S.col+1)+'  Rg '+(S.ln+1)+'  Pg '+(Math.floor(S.ln/PAGE_LEN)+1);
+}
+function yn(v){ return v?'ON':'OFF'; }
 function drawOptions(){
   clearFileHits();
   clearOptionHits();
-  center(0,'OPZIONI VaaardStar');
-  drawTxt(3,2,'--- Google Drive ---');
-  drawTxt(5,4,'Ogni utente accede con il proprio account Google.');
-  drawTxt(6,4,'I file .cio vengono salvati nella cartella '+DRIVE_FOLDER+'.');
-  if(!googleConfigured()){
-    drawTxt(9,4,'Per abilitare il login, chi pubblica l\'app deve');
-    drawTxt(10,4,'inserire un Client ID OAuth in google-config.js');
-    drawTxt(11,4,'(Google Cloud Console, origine autorizzata).');
-    showGoogleLoginPanel(false);
-  }else if(driveBusy){
-    drawTxt(9,4,'Sincronizzazione in corso...');
-    showGoogleLoginPanel(false);
-  }else if(driveConnected){
-    const em=(driveUserEmail||'account Google').slice(0,52);
-    drawTxt(9,4,'Account: '+em);
-    drawTxt(11,4,'> Disconnetti Google Drive');
-    registerOptionHit('disconnect',11,4,11,30);
-    showGoogleLoginPanel(false);
+  showGoogleLoginPanel(false);
+  center(0,'OPZIONI VaaardStar  ('+(optPage+1)+'/4)');
+  if(optPage===0){
+    drawTxt(2,2,'--- Google Drive ---');
+    if(!googleConfigured())drawTxt(4,4,'Configura google-config.js per OAuth');
+    else if(driveBusy)drawTxt(4,4,'Sincronizzazione...');
+    else if(driveConnected){
+      drawTxt(4,4,'Account: '+(driveUserEmail||'?').slice(0,48));
+      drawTxt(5,4,'> Disconnetti Drive'); registerOptionHit('disconnect',5,4,5,24);
+    }else{
+      drawTxt(4,4,'> Accedi con Google (G)'); registerOptionHit('connect',4,4,4,28);
+      showGoogleLoginPanel(true);
+    }
+    drawTxt(7,2,'--- Schermo ---');
+    drawTxt(8,4,(isFullscreen()?'> Esci schermo intero (F)':'> Schermo intero (F)')); registerOptionHit('fullscreen',8,4,8,30);
+    drawTxt(9,4,(document.body.classList.contains('text-only')?'> Disattiva solo testo':'> Solo testo (T)')); registerOptionHit('textonly',9,4,9,28);
+    drawTxt(11,4,'> Ripristina versione file'); registerOptionHit('restorever',11,4,11,30);
+  }else if(optPage===1){
+    drawTxt(2,2,'--- Suoni ---');
+    drawTxt(4,4,'Tastiera ['+yn(VSF.cfg.soundKeys)+']'); registerOptionHit('toggle:keys',4,4,4,22);
+    drawTxt(5,4,'Disk drive ['+yn(VSF.cfg.soundDisk)+']'); registerOptionHit('toggle:disk',5,4,5,24);
+    drawTxt(6,4,'Boot ['+yn(VSF.cfg.soundBoot)+']'); registerOptionHit('toggle:boot',6,4,6,18);
+    drawTxt(7,4,'Aptica ['+yn(VSF.cfg.haptic)+']'); registerOptionHit('toggle:haptic',7,4,7,20);
+    drawTxt(9,4,'Profilo: '+VSF.cfg.soundProfile.toUpperCase()+'  (clicca)'); registerOptionHit('prof',9,4,9,36);
+    drawTxt(10,4,'Volume: '+Math.round(VSF.cfg.soundVolume*100)+'%  [-] [+]');
+    registerOptionHit('vol-',10,4,10,28); registerOptionHit('vol+',10,32,10,38);
+  }else if(optPage===2){
+    drawTxt(2,2,'--- Editor ---');
+    drawTxt(4,4,'Aiuto livello: '+VSF.cfg.helpLevel+'  [-] [+]');
+    registerOptionHit('help-',4,4,4,28); registerOptionHit('help+',4,32,4,38);
+    drawTxt(5,4,'Righello ['+yn(VSF.cfg.ruler)+']'); registerOptionHit('toggle:ruler',5,4,5,22);
+    drawTxt(6,4,'A capo auto ['+yn(VSF.cfg.wrapOn)+']'); registerOptionHit('toggle:wrap',6,4,6,26);
+    drawTxt(7,4,'Margine riforma: '+VSF.cfg.wrapMargin+'  [-] [+]');
+    registerOptionHit('margin-',7,4,7,32); registerOptionHit('margin+',7,36,7,42);
+    drawTxt(9,4,'^QN conteggio parole nel documento');
   }else{
-    drawTxt(9,4,'Clicca "Accedi con Google" sotto oppure G');
-    registerOptionHit('connect',9,4,9,44);
-    showGoogleLoginPanel(true);
+    drawTxt(2,2,'--- Sync / Drive ---');
+    drawTxt(4,4,'Sync tutti i file ['+yn(VSF.cfg.driveSyncAll)+']'); registerOptionHit('syncall',4,4,4,32);
+    drawTxt(6,4,'File sul disco (clicca per sync ON/OFF):');
+    const names=Object.keys(disk||{}).sort().slice(0,8);
+    names.forEach((n,i)=>{
+      const row=8+i, on=VSF.cfg.driveSyncAll||VSF.cfg.driveSyncFiles[n]!==false;
+      const link=extHandles.has(n)?' @':'';
+      drawTxt(row,6,(on?'[X] ':'[ ] ')+n+link);
+      registerOptionHit('syncfile:'+n,row,6,row,22);
+    });
   }
-  drawTxt(14,2,'--- Schermo ---');
-  const fsLine=isFullscreen()?'Schermo intero: ATTIVO':'> Passa a schermo intero';
-  drawTxt(16,4,fsLine);
-  registerOptionHit('fullscreen',16,4,16,34);
-  drawTxt(21,2,'F  Schermo intero   G  Google   ESC  Menu');
+  drawTxt(20,2,'< Pag prec'); registerOptionHit('pageprev',20,2,20,14);
+  drawTxt(20,40,'Pag succ >'); registerOptionHit('pagenext',20,40,20,52);
+  drawTxt(22,2,'PgSu/PgGiu o ,/. cambiano pagina   ESC menu');
   bottomLine(false);
 }
 function keyOptions(e){
   if(e.code==='Escape'){ closeOptions(); return; }
+  if(e.code==='PageUp'||e.key===','){ optPage=Math.max(0,optPage-1); return; }
+  if(e.code==='PageDown'||e.key==='.'){ optPage=Math.min(3,optPage+1); return; }
   if(e.ctrlKey)return;
   const k=(e.key||'').toLowerCase();
   if(k==='f'){ toggleFullscreen(); return; }
+  if(k==='t'){ setTextOnly(!document.body.classList.contains('text-only')); return; }
   if(k==='g'&&googleConfigured()&&!driveConnected&&!driveBusy){ connectDrive(); return; }
   if(k==='d'&&driveConnected){ askYN('Disconnettere Google Drive? ',y=>{ if(y)disconnectDrive(); }); return; }
   if(k.length===1&&k>=' ')beep();
@@ -2154,9 +2411,17 @@ function buildBar(){
   spRow.className='kb-row';
   spRow.appendChild(bc);
   spRow.appendChild(mkBtn('SPAZIO',()=>typeFromBar(' '),true,'wide'));
+  spRow.appendChild(mkBtn('INVIO',()=>pressCode('Enter')));
   spRow.appendChild(bCaps);
   spRow.appendChild(bMic);
   space.appendChild(spRow);
+  let barSwipeY=null;
+  barEl.addEventListener('touchstart',e=>{ if(e.touches.length===1)barSwipeY=e.touches[0].clientY; },{passive:true});
+  barEl.addEventListener('touchend',e=>{
+    if(barSwipeY===null||!e.changedTouches[0])return;
+    if(e.changedTouches[0].clientY-barSwipeY>50)setTextOnly(true);
+    barSwipeY=null;
+  },{passive:true});
   const tabAbc=mkBtn('ABC',()=>setBarPanel('abc')); tabAbc.id='tab-abc'; tabAbc.className='tab on';
   const tab123=mkBtn('123',()=>setBarPanel('123')); tab123.id='tab-123'; tab123.className='tab';
   const tabPunct=mkBtn('.,;!',()=>setBarPanel('punct')); tabPunct.id='tab-punct'; tabPunct.className='tab';
@@ -2170,7 +2435,7 @@ function buildBar(){
   };
   mkKbRow(pAbc,'QWERTYUIOP'.split('').map(c=>[c]),letterAct);
   mkKbRow(pAbc,'ASDFGHJKL'.split('').map(c=>[c]),letterAct);
-  mkKbRow(pAbc,[['Z','Z'],['X','X'],['C','C'],['V','V'],['B','B'],['N','N'],['M','M']],letterAct);
+  mkKbRow(pAbc,[['Z','Z'],['X','X'],['C','C'],['V','V'],['B','B'],['N','N'],['M','M'],[',',','],['.','.']],letterAct);
   mkKbRow(p123,'1234567890'.split('').map(c=>[c]),c=>typeFromBar(c));
   mkKbRow(pPunct,[['.','.'],[',',','],[';',';'],[':',':'],['!','!'],['?','?'],['-','-'],['_','_'],['(',')'],['/','/'],['\\','\\'],['@','@'],['"','"']],c=>typeFromBar(c));
   mkKbRow(pPunct,[["'","'"],['+','+'],['=','='],['[',']'],['{','}'],['<','>'],['|','|'],['#','#'],['%','%'],['&','&'],['*','*']],c=>typeFromBar(c));
@@ -2269,7 +2534,23 @@ updateFsBtn();
 function updateZoomBtn(){
   const show=IS_TOUCH&&isPortrait();
   tz.style.display=show?'block':'none';
+  const tt=document.getElementById('toggletext');
+  if(tt)tt.style.display=IS_TOUCH?'block':'none';
   if(!show){ zoomMode=false; document.body.classList.remove('portrait-zoom'); }
+}
+let textOnlyMode=false;
+function setTextOnly(on){
+  textOnlyMode=!!on;
+  document.body.classList.toggle('text-only',textOnlyMode);
+  if(textOnlyMode){ setBar(false); if(IS_TOUCH&&isPortrait())setZoom(true); }
+  else if(IS_TOUCH)setBar(true);
+  updateTextOnlyBtn();
+  requestAnimationFrame(fit);
+}
+function updateTextOnlyBtn(){
+  const b=document.getElementById('toggletext');
+  if(!b)return;
+  b.classList.toggle('on',textOnlyMode);
 }
 function setZoom(on){
   zoomMode=!!on;
@@ -2287,6 +2568,10 @@ tg.addEventListener('pointerdown',e=>e.preventDefault());
 tg.addEventListener('click',e=>{ e.preventDefault(); setBar(!document.body.classList.contains('showbar')); });
 tz.addEventListener('pointerdown',e=>e.preventDefault());
 tz.addEventListener('click',e=>{ e.preventDefault(); setZoom(!zoomMode); });
+const ttxt=document.getElementById('toggletext');
+ttxt.addEventListener('pointerdown',e=>e.preventDefault());
+ttxt.addEventListener('click',e=>{ e.preventDefault(); setTextOnly(!textOnlyMode); });
+updateTextOnlyBtn();
 const td=document.getElementById('toggledrive');
 td.addEventListener('pointerdown',e=>e.preventDefault());
 td.addEventListener('click',e=>{ e.preventDefault(); toggleDriveConnection(); });
@@ -2322,10 +2607,19 @@ async function bootApp(){
   setupShareTarget();
   registerSW();
   setupLaunchQueue();
+  if(VSF){
+    await VSF.load(idbGetMeta);
+    VSF.applyToState(S);
+  }
   updateDriveBtn();
   await initDisk();
   await tryDriveReconnect();
   await processLaunchQueue();
+  const qp=new URLSearchParams(location.search);
+  if(qp.get('opts')==='1'){ history.replaceState(null,'',location.pathname); openOptions(); }
+  else if(qp.get('backup')==='1'){ history.replaceState(null,'',location.pathname); exportDiskBackup(); }
+  else if(qp.get('new')==='1'){ history.replaceState(null,'',location.pathname); openFile('UNTITLED',true); }
+  playBootSound();
   if(document.fonts&&document.fonts.load)await document.fonts.load('20px '+FONT).catch(()=>{});
   init();
 }

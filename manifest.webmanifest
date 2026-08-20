@@ -14,6 +14,21 @@
     { "src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
     { "src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ],
+  "shortcuts": [
+    { "name": "Nuovo documento", "url": "./index.html?new=1", "description": "Apri editor" },
+    { "name": "Opzioni", "url": "./index.html?opts=1", "description": "Impostazioni e Google Drive" },
+    { "name": "Backup ZIP", "url": "./index.html?backup=1", "description": "Esporta backup disco" }
+  ],
+  "share_target": {
+    "action": "./index.html",
+    "method": "GET",
+    "enctype": "application/x-www-form-urlencoded",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  },
   "file_handlers": [
     {
       "action": "./index.html",

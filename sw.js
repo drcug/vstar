@@ -1,13 +1,16 @@
 'use strict';
-const CACHE='vaaardstar-v2';
+const CACHE='vaaardstar-v3';
 const ASSETS=[
   './',
   './index.html',
   './vaaard.html',
   './google-config.js',
+  './js/vs-lib.js',
+  './js/vs-features.js',
   './assets/WebPlus_IBM_VGA_9x16.woff',
   './assets/icon-192.png',
-  './assets/icon-512.png'
+  './assets/icon-512.png',
+  './manifest.webmanifest'
 ];
 
 self.addEventListener('install',e=>{

@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html lang="it"><head><meta charset="utf-8"><title>VaaardStar tests</title></head>
+<body>
+<h1>VaaardStar — test</h1>
+<pre id="out"></pre>
+<script src="../js/vs-lib.js"></script>
+<script>
+const results=VSLib.runTests();
+const out=document.getElementById('out');
+out.textContent=results.map(r=> (r.ok?'OK':'FAIL')+' '+r.name+(r.err?': '+r.err:'')).join('\n');
+if(!results.every(r=>r.ok))document.body.style.background='#400';
+</script>
+</body></html>
