@@ -89,12 +89,12 @@
   <div id="scrb"><canvas id="scr"></canvas></div>
   <div id="bar" class="kb-abc">
     <div class="kb-row" id="kb-nav"></div>
-    <div class="kb-row" id="kb-space"></div>
     <div class="kb-row" id="kb-tabs"></div>
     <div class="kb-panel" id="kb-panel-abc"></div>
     <div class="kb-panel" id="kb-panel-123"></div>
     <div class="kb-panel" id="kb-panel-punct"></div>
     <div class="kb-panel" id="kb-panel-accent"></div>
+    <div class="kb-row" id="kb-space"></div>
   </div>
 </div>
 <button id="togglezoom">ZOOM</button>
@@ -2152,8 +2152,9 @@ function buildBar(){
   bMic.id='btn-mic'; bMic.className='mic';
   const spRow=document.createElement('div');
   spRow.className='kb-row';
-  spRow.appendChild(bc); spRow.appendChild(bCaps);
+  spRow.appendChild(bc);
   spRow.appendChild(mkBtn('SPAZIO',()=>typeFromBar(' '),true,'wide'));
+  spRow.appendChild(bCaps);
   spRow.appendChild(bMic);
   space.appendChild(spRow);
   const tabAbc=mkBtn('ABC',()=>setBarPanel('abc')); tabAbc.id='tab-abc'; tabAbc.className='tab on';
