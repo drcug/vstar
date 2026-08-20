@@ -68,6 +68,10 @@
     max-width:42vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   #toggledrive.on{background:#4285f4;color:#fff;border-color:#8ab4f8}
   #toggledrive.busy{opacity:.7}
+  #togglefs{position:fixed;top:42px;right:6px;z-index:6;font-family:"WebPlus IBM VGA","Courier New",monospace;
+    font-size:14px;background:#000;color:#fff;border:1px solid #fff;padding:3px 8px;
+    touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+  #togglefs.on{background:#fff;color:#000}
   #opt-google-panel{display:none;position:fixed;left:50%;top:46%;transform:translate(-50%,-50%);z-index:7;
     flex-direction:column;align-items:center;gap:10px;pointer-events:auto}
   #btn-google-login{font-family:Roboto,Arial,sans-serif;font-size:15px;padding:11px 22px;background:#4285f4;
@@ -95,6 +99,7 @@
 </div>
 <button id="togglezoom">ZOOM</button>
 <button id="toggledrive" title="Google Drive">DRIVE</button>
+<button id="togglefs" title="Schermo intero">⛶ FULL</button>
 <button id="togglebar">⌨ TASTIERA</button>
 <textarea id="keyin" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="enter"></textarea>
 <input type="file" id="fileimport" accept=".cio,.txt,.text,.md,.log" multiple hidden>
@@ -627,6 +632,7 @@ async function exportViaFSA(name){
 }
 async function importFromFile(file,openAfter){
   await initDisk();
+  if(!openAfter)playDiskDrive('read');
   const text=await file.text();
   const name=diskNameFromFile(file.name);
   disk[name]=text.replace(/\r\n/g,'\n').replace(/\r/g,'\n');
@@ -938,6 +944,7 @@ function handleOptionsClick(clientX,clientY){
   const act=hitTestOption(row,col);
   if(act==='disconnect'){ askYN('Disconnettere Google Drive? ',y=>{ if(y)disconnectDrive(); }); return true; }
   if(act==='connect'){ connectDrive(); return true; }
+  if(act==='fullscreen'){ toggleFullscreen(); return true; }
   return false;
 }
 function handleFileListClick(clientX,clientY){
@@ -973,16 +980,131 @@ const KMENU='^K: BK marca C copia V muovi Y canc H nasc W scr|S salva D fatto X 
 const QMENU='^Q: S/D riga E/X schermo R/C file W/Z scorri P prec F trova A sost 0-9 B/K blocco';
 const OMENU='^O: R righello  W a capo autom.  I livello aiuto  (esc annulla)';
 
-/* ------------------------------ AUDIO (beep) ------------------------------ */
+/* ------------------------------ AUDIO (beep, tastiera, disk drive) ------------------------------ */
 let AC=null;
-function beep(f,d){
+function ensureAC(){
   try{
     AC=AC||new (window.AudioContext||window.webkitAudioContext)();
-    const o=AC.createOscillator(),v=AC.createGain();
-    o.type='square'; o.frequency.value=f||880; v.gain.value=0.03;
-    o.connect(v); v.connect(AC.destination);
-    o.start(); o.stop(AC.currentTime+(d||0.06));
-  }catch(e){}
+    if(AC.state==='suspended')AC.resume();
+    return AC;
+  }catch(e){ return null; }
+}
+function beep(f,d){
+  const ac=ensureAC(); if(!ac)return;
+  const o=ac.createOscillator(),v=ac.createGain();
+  o.type='square'; o.frequency.value=f||880; v.gain.value=0.03;
+  o.connect(v); v.connect(ac.destination);
+  o.start(); o.stop(ac.currentTime+(d||0.06));
+}
+function playKeyClick(kind){
+  const ac=ensureAC(); if(!ac)return;
+  const t=ac.currentTime;
+  const out=ac.createGain();
+  out.connect(ac.destination);
+  const dur=kind==='space'?0.042:kind==='enter'?0.055:kind==='soft'?0.022:0.03;
+  const pitch=kind==='space'?170:kind==='enter'?210:kind==='soft'?380:300+Math.random()*60;
+  const nLen=Math.max(8,Math.floor(ac.sampleRate*0.009));
+  const buf=ac.createBuffer(1,nLen,ac.sampleRate);
+  const nd=buf.getChannelData(0);
+  for(let i=0;i<nLen;i++)nd[i]=(Math.random()*2-1)*(1-i/nLen);
+  const noise=ac.createBufferSource();
+  noise.buffer=buf;
+  const nF=ac.createBiquadFilter();
+  nF.type='highpass'; nF.frequency.value=kind==='soft'?900:1400;
+  const nG=ac.createGain();
+  nG.gain.setValueAtTime(kind==='soft'?0.035:0.075,t);
+  nG.gain.exponentialRampToValueAtTime(0.001,t+0.014);
+  noise.connect(nF); nF.connect(nG); nG.connect(out);
+  noise.start(t); noise.stop(t+0.016);
+  const osc=ac.createOscillator();
+  osc.type='triangle';
+  osc.frequency.setValueAtTime(pitch,t);
+  osc.frequency.exponentialRampToValueAtTime(Math.max(60,pitch*0.55),t+dur);
+  const oG=ac.createGain();
+  oG.gain.setValueAtTime(kind==='soft'?0.05:0.11,t);
+  oG.gain.exponentialRampToValueAtTime(0.001,t+dur);
+  osc.connect(oG); oG.connect(out);
+  osc.start(t); osc.stop(t+dur+0.01);
+  if(kind==='normal'||kind==='special'){
+    const ring=ac.createOscillator();
+    ring.type='sine';
+    ring.frequency.value=4100+Math.random()*900;
+    const rG=ac.createGain();
+    rG.gain.setValueAtTime(0.018,t);
+    rG.gain.exponentialRampToValueAtTime(0.001,t+0.02);
+    ring.connect(rG); rG.connect(out);
+    ring.start(t); ring.stop(t+0.022);
+  }
+}
+function playDiskDrive(mode){
+  const ac=ensureAC(); if(!ac)return;
+  const t=ac.currentTime;
+  const out=ac.createGain();
+  out.gain.value=0.38;
+  out.connect(ac.destination);
+  const seek=ac.createOscillator();
+  seek.type='square';
+  seek.frequency.setValueAtTime(mode==='read'?880:680,t);
+  seek.frequency.linearRampToValueAtTime(360,t+0.09);
+  const sG=ac.createGain();
+  sG.gain.setValueAtTime(0.045,t);
+  sG.gain.linearRampToValueAtTime(0.018,t+0.07);
+  sG.gain.exponentialRampToValueAtTime(0.001,t+0.14);
+  seek.connect(sG); sG.connect(out);
+  seek.start(t); seek.stop(t+0.15);
+  const motor=ac.createOscillator();
+  motor.type='sawtooth';
+  motor.frequency.setValueAtTime(78,t+0.06);
+  motor.frequency.setValueAtTime(92,t+0.28);
+  const mG=ac.createGain();
+  mG.gain.setValueAtTime(0,t+0.06);
+  mG.gain.linearRampToValueAtTime(0.028,t+0.14);
+  mG.gain.setValueAtTime(0.028,t+0.26);
+  mG.gain.exponentialRampToValueAtTime(0.001,t+0.58);
+  motor.connect(mG); mG.connect(out);
+  motor.start(t+0.06); motor.stop(t+0.6);
+  const bufLen=Math.floor(ac.sampleRate*0.38);
+  const buf=ac.createBuffer(1,bufLen,ac.sampleRate);
+  const data=buf.getChannelData(0);
+  for(let i=0;i<bufLen;i++){
+    const env=i<bufLen*0.18?i/(bufLen*0.18):i>bufLen*0.82?(bufLen-i)/(bufLen*0.18):1;
+    data[i]=(Math.random()*2-1)*env*0.35;
+  }
+  const rustle=ac.createBufferSource();
+  rustle.buffer=buf;
+  const rF=ac.createBiquadFilter();
+  rF.type='bandpass'; rF.frequency.value=2400; rF.Q.value=1.4;
+  const rG=ac.createGain();
+  rG.gain.setValueAtTime(0,t+0.11);
+  rG.gain.linearRampToValueAtTime(0.065,t+0.2);
+  rG.gain.exponentialRampToValueAtTime(0.001,t+0.56);
+  rustle.connect(rF); rF.connect(rG); rG.connect(out);
+  rustle.start(t+0.11); rustle.stop(t+0.57);
+  const clunk=ac.createOscillator();
+  clunk.type='triangle';
+  clunk.frequency.setValueAtTime(130,t+0.5);
+  clunk.frequency.exponentialRampToValueAtTime(38,t+0.58);
+  const cG=ac.createGain();
+  cG.gain.setValueAtTime(0.09,t+0.5);
+  cG.gain.exponentialRampToValueAtTime(0.001,t+0.62);
+  clunk.connect(cG); cG.connect(out);
+  clunk.start(t+0.5); clunk.stop(t+0.63);
+}
+function shouldPlayKeyClick(e){
+  if(e.metaKey||e.key==='F12'||e.code==='F12')return false;
+  if(e.key==='F11'||e.code==='F11')return false;
+  if(!e.key&&!e.code)return false;
+  return true;
+}
+function keyClickFor(e){
+  const c=e.code||'';
+  if(c==='Space'||e.key===' ')return playKeyClick('space');
+  if(c==='Enter')return playKeyClick('enter');
+  if(c==='Backspace'||c==='Delete')return playKeyClick('special');
+  if(c.startsWith('Arrow')||c==='Tab'||c==='PageUp'||c==='PageDown'||c==='Home'||c==='End')return playKeyClick('soft');
+  if(e.ctrlKey||e.altKey)return playKeyClick('soft');
+  if(e.key&&e.key.length===1&&e.key>=' ')return playKeyClick('normal');
+  if(e.key&&e.key.length===1)return playKeyClick('soft');
 }
 function say(m){ S.msg=m; }
 
@@ -1326,6 +1448,7 @@ function handlePrompt(e){
 function openFile(name,isDoc){
   const n=normDiskName(name,isDoc);
   const exists=n in disk;
+  if(exists)playDiskDrive('read');
   S.filename=n;
   S.wrapOn=isDoc;
   S.doc=exists?(disk[n]||'').split(/\r?\n/):[''];
@@ -1338,6 +1461,7 @@ function openFile(name,isDoc){
 }
 function doSave(silent){
   if(!S.filename)return;
+  if(!silent)playDiskDrive('write');
   disk[S.filename]=S.doc.join('\r\n');
   saveDiskFile(S.filename);
   writeExternalIfLinked(S.filename);
@@ -1748,13 +1872,18 @@ function drawOptions(){
     registerOptionHit('connect',9,4,9,44);
     showGoogleLoginPanel(true);
   }
-  drawTxt(21,2,'G  Accedi con Google   ESC  Menu');
+  drawTxt(14,2,'--- Schermo ---');
+  const fsLine=isFullscreen()?'Schermo intero: ATTIVO':'> Passa a schermo intero';
+  drawTxt(16,4,fsLine);
+  registerOptionHit('fullscreen',16,4,16,34);
+  drawTxt(21,2,'F  Schermo intero   G  Google   ESC  Menu');
   bottomLine(false);
 }
 function keyOptions(e){
   if(e.code==='Escape'){ closeOptions(); return; }
   if(e.ctrlKey)return;
   const k=(e.key||'').toLowerCase();
+  if(k==='f'){ toggleFullscreen(); return; }
   if(k==='g'&&googleConfigured()&&!driveConnected&&!driveBusy){ connectDrive(); return; }
   if(k==='d'&&driveConnected){ askYN('Disconnettere Google Drive? ',y=>{ if(y)disconnectDrive(); }); return; }
   if(k.length===1&&k>=' ')beep();
@@ -1837,6 +1966,8 @@ function focusKeyin(){
 function blurKeyin(){ try{keyin.blur();}catch(e){} }
 function dispatch(e){
   if(e.key==='F12')return;
+  if(e.key==='F11'||e.code==='F11'){ toggleFullscreen(); return; }
+  if(shouldPlayKeyClick(e))keyClickFor(e);
   if(S.prompt){ handlePrompt(e); return; }
   switch(S.mode){
     case 'boot': S.mode='open'; break;
@@ -2103,6 +2234,37 @@ function stopSpeech(){
 buildBar();
 const tg=document.getElementById('togglebar');
 const tz=document.getElementById('togglezoom');
+const tfs=document.getElementById('togglefs');
+function isFullscreen(){
+  return !!(document.fullscreenElement||document.webkitFullscreenElement);
+}
+function updateFsBtn(){
+  if(!tfs)return;
+  const on=isFullscreen();
+  tfs.classList.toggle('on',on);
+  tfs.textContent=on?'⛶ ESC':'⛶ FULL';
+  tfs.title=on?'Esci da schermo intero (F11)':'Schermo intero (F11)';
+}
+async function toggleFullscreen(){
+  ensureAC();
+  try{
+    if(isFullscreen()){
+      if(document.exitFullscreen)await document.exitFullscreen();
+      else if(document.webkitExitFullscreen)await document.webkitExitFullscreen();
+    }else{
+      const el=document.documentElement;
+      if(el.requestFullscreen)await el.requestFullscreen();
+      else if(el.webkitRequestFullscreen)await el.webkitRequestFullscreen();
+    }
+  }catch(e){ say('Schermo intero non disponibile'); beep(); }
+  updateFsBtn();
+  requestAnimationFrame(fit);
+}
+document.addEventListener('fullscreenchange',updateFsBtn);
+document.addEventListener('webkitfullscreenchange',updateFsBtn);
+tfs.addEventListener('pointerdown',e=>e.preventDefault());
+tfs.addEventListener('click',e=>{ e.preventDefault(); toggleFullscreen(); });
+updateFsBtn();
 function updateZoomBtn(){
   const show=IS_TOUCH&&isPortrait();
   tz.style.display=show?'block':'none';
