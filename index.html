@@ -582,6 +582,36 @@ function drawTxt(r,c,s,inv){
   s=s||'';
   for(let i=0;i<s.length&&c+i<COLS;i++){ if(c+i<0)continue; drawCell(c+i,r,s[i],inv); }
 }
+let fileListHits=[];
+function clearFileHits(){ fileListHits.length=0; }
+function registerFileHit(name,row,colStart){
+  fileListHits.push({name,row,colStart,colEnd:colStart+name.length});
+}
+function canvasToCell(clientX,clientY){
+  const r=cv.getBoundingClientRect();
+  const useZoom=isPortraitZoom()&&S.mode==='edit';
+  const maxCols=useZoom?viewCols:COLS;
+  const maxRows=useZoom?viewRows:ROWS;
+  return {
+    row:Math.floor((clientY-r.top)/r.height*maxRows),
+    col:Math.floor((clientX-r.left)/r.width*maxCols)
+  };
+}
+function hitTestFile(row,col){
+  for(let i=0;i<fileListHits.length;i++){
+    const h=fileListHits[i];
+    if(h.row===row&&col>=h.colStart&&col<h.colEnd)return h.name;
+  }
+  return null;
+}
+function handleFileListClick(clientX,clientY){
+  if(!disk||(S.mode!=='open'&&S.mode!=='dir'))return false;
+  const {row,col}=canvasToCell(clientX,clientY);
+  const name=hitTestFile(row,col);
+  if(!name)return false;
+  openFile(name,!name.endsWith('.DAT'));
+  return true;
+}
 function center(r,s){ drawTxt(r,Math.max(0,Math.floor((COLS-s.length)/2)),s); }
 function padLine(parts){
   const total=parts.reduce((a,p)=>a+p.length,0);
@@ -1334,6 +1364,7 @@ function drawEditZoom(){
   drawZoomBottom();
 }
 function drawOpen(){
+  clearFileHits();
   center(1,'< < <  M E N U   P R I N C I P A L E  > > >');
   drawTxt(3,1,'---Comandi preliminari---'); drawTxt(3,32,'--Comandi file--'); drawTxt(3,58,'-Comandi di sistema-');
   drawTxt(4,1,'L  Cambia drive'); drawTxt(4,32,'P  ESPORTA un file'); drawTxt(4,58,'R  Esegui programma');
@@ -1346,19 +1377,20 @@ function drawOpen(){
   drawTxt(11,1,'A: FILE SUL DISCO ('+dateStr()+'):');
   const names=Object.keys(disk).sort();
   if(!names.length)drawTxt(12,3,'(disco vuoto)');
-  names.slice(0,8).forEach((n,i)=>{ drawTxt(12+i,3,n.padEnd(14)+String(fmtSize((disk[n]||'').length)).padStart(7)); });
+  names.slice(0,8).forEach((n,i)=>{ const row=12+i; drawTxt(row,3,n.padEnd(14)+String(fmtSize((disk[n]||'').length)).padStart(7)); registerFileHit(n,row,3); });
   if(names.length>8)drawTxt(21,3,'...e altri '+(names.length-8));
-  drawTxt(23,1,'Digita una lettera di comando (D per aprire un file).');
+  drawTxt(23,1,'Digita un comando o clicca un file per aprirlo.');
   bottomLine(false);
 }
 function drawDir(){
+  clearFileHits();
   center(1,'ELENCO FILE  A:');
   const names=Object.keys(disk).sort();
-  names.slice(0,18).forEach((n,i)=>{ drawTxt(3+i,4,n.padEnd(16)+fmtSize((disk[n]||'').length).padStart(7)+'   '+dateStr()); });
+  names.slice(0,18).forEach((n,i)=>{ const row=3+i; drawTxt(row,4,n.padEnd(16)+fmtSize((disk[n]||'').length).padStart(7)+'   '+dateStr()); registerFileHit(n,row,4); });
   if(names.length>18)drawTxt(21,4,'...'+(names.length-18)+' altri');
   const used=names.reduce((a,n)=>a+(disk[n]||'').length,0);
   drawTxt(22,4,names.length+' file   '+fmtSize(used)+' usati   '+fmtSize(Math.max(0,360*1024-used))+' liberi');
-  drawTxt(23,4,'Premi un tasto per tornare al menu principale');
+  drawTxt(23,4,'Clicca un file per aprirlo, un tasto per tornare al menu');
   bottomLine(false);
 }
 function drawHelp(){
@@ -1475,8 +1507,10 @@ function updateEditScrollClass(){
   document.body.classList.toggle('edit-scroll',S.mode==='edit'&&!!panState&&panState.moved);
 }
 scrbEl.addEventListener('touchstart',e=>{
-  if(S.mode!=='edit'||S.prompt||e.touches.length!==1)return;
-  panState={y0:e.touches[0].clientY,lastY:e.touches[0].clientY,top0:S.top,moved:false,acc:0};
+  if(S.prompt||e.touches.length!==1)return;
+  if(S.mode==='edit'||S.mode==='open'||S.mode==='dir'){
+    panState={y0:e.touches[0].clientY,lastY:e.touches[0].clientY,top0:S.top,moved:false,acc:0};
+  }
 },{passive:true});
 scrbEl.addEventListener('touchmove',e=>{
   if(!panState||S.mode!=='edit'||S.prompt)return;
@@ -1495,9 +1529,13 @@ scrbEl.addEventListener('touchmove',e=>{
 },{passive:false});
 scrbEl.addEventListener('touchend',e=>{
   if(!panState)return;
-  if(!panState.moved&&S.mode==='edit'&&!S.prompt&&e.changedTouches[0]){
-    focusKeyin();
-    placeCursorAt(e.changedTouches[0].clientX,e.changedTouches[0].clientY);
+  if(!panState.moved&&e.changedTouches[0]){
+    const t=e.changedTouches[0];
+    if(handleFileListClick(t.clientX,t.clientY))return;
+    if(S.mode==='edit'&&!S.prompt){
+      focusKeyin();
+      placeCursorAt(t.clientX,t.clientY);
+    }
   }
   panState=null;
   updateEditScrollClass();
@@ -1516,6 +1554,7 @@ cv.addEventListener('wheel',onDocWheel,{passive:false});
 cv.addEventListener('pointerdown',e=>{
   if(IS_TOUCH)return;
   focusKeyin();
+  if(handleFileListClick(e.clientX,e.clientY))return;
   if(S.mode==='edit'&&!S.prompt)placeCursorAt(e.clientX,e.clientY);
 });
 scrbEl.addEventListener('pointerdown',e=>{
