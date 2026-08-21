@@ -3036,6 +3036,11 @@ async function bootApp(){
   registerSW();
   setupLaunchQueue();
   if(typeof VSExt!=='undefined')VSExt.setupInstallPrompt();
+  if('serviceWorker' in navigator){
+    navigator.serviceWorker.addEventListener('controllerchange',()=>{
+      if(swUpdatePending)location.reload();
+    });
+  }
   if(VSF){
     await VSF.load(idbGetMeta);
     VSF.applyToState(S);
