@@ -1003,11 +1003,12 @@ function drawTxt(r,c,s,inv){
 }
 let fileListHits=[];
 function clearFileHits(){ fileListHits.length=0; }
-function registerFileHit(name,row,colStart){
-  fileListHits.push({name,row,colStart,colEnd:colStart+name.length});
+function registerFileHit(name,row,colStart,colEnd){
+  fileListHits.push({name,row,colStart,colEnd:colEnd!=null?colEnd:colStart+name.length});
 }
 function canvasToCell(clientX,clientY){
   const r=cv.getBoundingClientRect();
+  if(clientX<r.left||clientX>r.right||clientY<r.top||clientY>r.bottom)return null;
   const useZoom=isPortraitZoom()&&S.mode==='edit';
   const maxCols=useZoom?viewCols:COLS;
   const maxRows=useZoom?viewRows:ROWS;
@@ -1040,8 +1041,9 @@ function hitTestOption(row,col){
 }
 function handleOptionsClick(clientX,clientY){
   if(S.mode!=='options')return false;
-  const {row,col}=canvasToCell(clientX,clientY);
-  const act=hitTestOption(row,col);
+  const cell=canvasToCell(clientX,clientY);
+  if(!cell)return false;
+  const act=hitTestOption(cell.row,cell.col);
   if(act==='disconnect'){ askYN('Disconnettere Google Drive? ',y=>{ if(y)disconnectDrive(); }); return true; }
   if(act==='connect'){ connectDrive(); return true; }
   if(act==='fullscreen'){ toggleFullscreen(); return true; }
@@ -1089,11 +1091,17 @@ function setHelpLevel(n){ VSF.cfg.helpLevel=Math.max(0,Math.min(3,n)); S.helpLev
 function handleFileListClick(clientX,clientY){
   if(handleOptionsClick(clientX,clientY))return true;
   if(!disk||(S.mode!=='open'&&S.mode!=='dir'))return false;
-  const {row,col}=canvasToCell(clientX,clientY);
-  const name=hitTestFile(row,col);
+  const cell=canvasToCell(clientX,clientY);
+  if(!cell)return false;
+  const name=hitTestFile(cell.row,cell.col);
   if(!name)return false;
   openFileSafe(name,!name.endsWith('.DAT'));
   return true;
+}
+function screenTapAt(clientX,clientY){
+  if(S.prompt)return;
+  if(handleFileListClick(clientX,clientY))return;
+  if(S.mode==='edit'&&!S.prompt){ focusKeyin(); placeCursorAt(clientX,clientY); }
 }
 function center(r,s){ drawTxt(r,Math.max(0,Math.floor((COLS-s.length)/2)),s); }
 function padLine(parts){
@@ -2067,12 +2075,21 @@ function drawOpen(){
   const recent=(VSF&&VSF.cfg.recentFiles||[]).filter(n=>disk&&n in disk).slice(0,3);
   if(recent.length){
     drawTxt(12,1,'RECENTI:');
-    recent.forEach((n,i)=>{ const row=12; drawTxt(row,10+i*14,n.padEnd(12)); registerFileHit('recent:'+n,row,10+i*14); });
+    recent.forEach((n,i)=>{
+      const c=10+i*14;
+      drawTxt(12,c,n.padEnd(12));
+      registerFileHit('recent:'+n,12,c,c+12);
+    });
   }
   drawTxt(13,1,'A: FILE SUL DISCO ('+dateStr()+'):');
   const names=Object.keys(disk).sort();
   if(!names.length)drawTxt(14,3,'(disco vuoto)');
-  names.slice(0,7).forEach((n,i)=>{ const row=14+i; const tag=extHandles.has(n)?'*':''; drawTxt(row,3,(n+tag).padEnd(14)+String(fmtSize((disk[n]||'').length)).padStart(7)); registerFileHit(n,row,3); });
+  names.slice(0,7).forEach((n,i)=>{
+    const row=14+i;
+    const tag=extHandles.has(n)?'*':'';
+    drawTxt(row,3,(n+tag).padEnd(14)+String(fmtSize((disk[n]||'').length)).padStart(7));
+    registerFileHit(n,row,3,28);
+  });
   if(names.length>7)drawTxt(22,3,'...e altri '+(names.length-7));
   drawTxt(23,1,'Digita un comando o clicca un file per aprirlo.');
   bottomLine(false);
@@ -2154,7 +2171,12 @@ function drawDir(){
   clearFileHits();
   center(1,'ELENCO FILE  A:');
   const names=Object.keys(disk).sort();
-  names.slice(0,18).forEach((n,i)=>{ const row=3+i; drawTxt(row,4,n.padEnd(16)+fmtSize((disk[n]||'').length).padStart(7)+'   '+dateStr()); registerFileHit(n,row,4); });
+  names.slice(0,18).forEach((n,i)=>{
+    const row=3+i;
+    const tag=extHandles.has(n)?'*':'';
+    drawTxt(row,4,(n+tag).padEnd(16)+fmtSize((disk[n]||'').length).padStart(7)+'   '+dateStr());
+    registerFileHit(n,row,4,28);
+  });
   if(names.length>18)drawTxt(21,4,'...'+(names.length-18)+' altri');
   const used=names.reduce((a,n)=>a+(disk[n]||'').length,0);
   drawTxt(22,4,names.length+' file   '+fmtSize(used)+' usati   '+fmtSize(Math.max(0,360*1024-used))+' liberi');
@@ -2302,17 +2324,18 @@ scrbEl.addEventListener('touchmove',e=>{
 scrbEl.addEventListener('touchend',e=>{
   if(!panState)return;
   if(!panState.moved&&e.changedTouches[0]){
-    const t=e.changedTouches[0];
-    if(handleFileListClick(t.clientX,t.clientY))return;
-    if(S.mode==='edit'&&!S.prompt){
-      focusKeyin();
-      placeCursorAt(t.clientX,t.clientY);
-    }
+    screenTapAt(e.changedTouches[0].clientX,e.changedTouches[0].clientY);
   }
   panState=null;
   updateEditScrollClass();
 });
 scrbEl.addEventListener('touchcancel',()=>{ panState=null; updateEditScrollClass(); });
+cv.addEventListener('click',e=>{ screenTapAt(e.clientX,e.clientY); });
+cv.addEventListener('pointerup',e=>{
+  if(e.pointerType!=='touch')return;
+  if(panState&&panState.moved)return;
+  screenTapAt(e.clientX,e.clientY);
+});
 function onDocWheel(e){
   if(S.mode!=='edit'||S.prompt)return;
   e.preventDefault();
@@ -2322,12 +2345,10 @@ function onDocWheel(e){
 scrbEl.addEventListener('wheel',onDocWheel,{passive:false});
 cv.addEventListener('wheel',onDocWheel,{passive:false});
 
-/* tocco/mouse: posiziona cursore (PC e tap senza scroll) */
+/* posiziona cursore (PC) — click gestito da cv.click / pointerup */
 cv.addEventListener('pointerdown',e=>{
   if(IS_TOUCH)return;
   focusKeyin();
-  if(handleFileListClick(e.clientX,e.clientY))return;
-  if(S.mode==='edit'&&!S.prompt)placeCursorAt(e.clientX,e.clientY);
 });
 scrbEl.addEventListener('pointerdown',e=>{
   if(IS_TOUCH||e.target!==scrbEl)return;
