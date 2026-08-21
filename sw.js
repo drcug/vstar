@@ -1,5 +1,5 @@
 'use strict';
-const CACHE='vaaardstar-v5';
+const CACHE='vaaardstar-v6';
 const ASSETS=[
   './',
   './index.html',
@@ -7,6 +7,7 @@ const ASSETS=[
   './google-config.js',
   './js/vs-lib.js',
   './js/vs-features.js',
+  './js/vs-ext.js',
   './assets/WebPlus_IBM_VGA_9x16.woff',
   './assets/icon-192.png',
   './assets/icon-512.png',

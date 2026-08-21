@@ -19,6 +19,7 @@
 <script src="google-config.js"></script>
 <script src="js/vs-lib.js"></script>
 <script src="js/vs-features.js"></script>
+<script src="js/vs-ext.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
   @font-face{
@@ -50,6 +51,19 @@
   body.text-only #bar{display:none!important}
   body.text-only.showbar #togglebar{opacity:.55}
   body.dirty-doc #togglebar{box-shadow:0 0 0 2px #f80}
+  body.theme-green canvas,body.theme-green #bar button{color:#33ff33;border-color:#33ff33}
+  body.theme-amber canvas,body.theme-amber #bar button{color:#ffb000;border-color:#ffb000}
+  body.crt-off #crt{display:none!important}
+  @media(max-width:520px){
+    #togglezoom,#toggletext,#toggledrive,#togglefs{font-size:11px;padding:2px 5px}
+    #togglezoom{left:4px;top:4px} #toggletext{left:4px;top:28px}
+    #toggledrive{top:4px;font-size:10px;max-width:34vw}
+    #togglefs{top:28px;right:4px} #togglebar{top:4px;right:4px;font-size:16px;padding:2px 8px}
+  }
+  #ctx-menu{position:fixed;z-index:8;background:#000;border:1px solid var(--vs-fg,#fff);display:none;flex-direction:column;min-width:140px}
+  #ctx-menu button{font-family:"WebPlus IBM VGA",monospace;background:#000;color:var(--vs-fg,#fff);border:0;border-bottom:1px solid #444;padding:10px 14px;text-align:left;cursor:pointer}
+  #ctx-menu button:last-child{border-bottom:0}
+  #ctx-menu button:active{background:var(--vs-fg,#fff);color:#000}
   #bar .kb-row{display:flex;gap:4px;width:100%;flex-shrink:0}
   #bar .kb-panel{display:none;flex-direction:column;gap:4px;width:100%;flex-shrink:0}
   body.showbar #bar.kb-abc #kb-panel-abc{display:flex}
@@ -119,6 +133,7 @@
 <button id="togglefs" title="Schermo intero" aria-label="Schermo intero">⛶ FULL</button>
 <button id="togglebar" aria-label="Mostra tastiera a video">⌨ TASTIERA</button>
 <div id="sr-live" role="status" aria-live="polite" aria-atomic="true"></div>
+<div id="ctx-menu" hidden></div>
 <textarea id="keyin" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="enter"></textarea>
 <input type="file" id="fileimport" accept=".cio,.txt,.text,.md,.log" multiple hidden>
 <input type="file" id="zipimport" accept=".zip,application/zip" hidden>
@@ -138,7 +153,7 @@ const EXT='.CIO', MIME_CIO='application/x-vaaardstar+cio';
 const IDB_NAME='vaaardstar', IDB_VER=2;
 function getRM(){ return VSF?VSF.cfg.wrapMargin:65; }
 const FONT='"WebPlus IBM VGA","Courier New",monospace';
-const FG='#ffffff';
+function getFG(){ return (typeof VSExt!=='undefined'&&VSF)?VSExt.themeFG(VSF.cfg):'#ffffff'; }
 const HAS_FSA='showOpenFilePicker' in window;
 const GOOGLE_CLIENT_ID=(window.VAAARDSTAR_GOOGLE&&window.VAAARDSTAR_GOOGLE.clientId)||'';
 const GOOGLE_SCOPE='https://www.googleapis.com/auth/drive.file openid email profile';
@@ -158,9 +173,12 @@ const S={
   lastFind:'', lastRepl:'',
   helpPage:0,
   dosLines:[], dosInput:'', dosFrom:'open',
-  undoStack:[], bootAt:Date.now()
+  undoStack:[], redoStack:[], bootAt:Date.now(),
+  spellMarks:null, spellPos:0
 };
-let optPage=0;
+let optPage=0,filePageOpen=0,filePageDir=0,fileHoverRow=-1,ctxFile=null;
+let lastTapAt=0,lastTapX=0,lastTapY=0,longPressTimer=null;
+const FILES_PER_OPEN=7,FILES_PER_DIR=15,DISK_LIMIT=360*1024;
 
 /* ------------------------------ DISCO VIRTUALE (IndexedDB) ------------------------------ */
 const README=
@@ -418,8 +436,15 @@ async function syncFromDrive(){
     }
     migrateDiskNames();
     await idbSaveAll(disk);
+    if(VSF){ VSF.cfg.lastSyncAt=Date.now(); VSF.cfg.lastSyncErr=''; VSF.save(idbPutMeta); }
     if(conflicts.length)say('Conflitti: copie locali in '+conflicts.join(', '));
+  }catch(e){
+    if(VSF){ VSF.cfg.lastSyncErr=String(e.message||e); VSF.save(idbPutMeta); }
   }finally{ driveBusy=false; updateDriveBtn(); }
+}
+async function syncDriveNow(){
+  if(!driveConnected){ say('Drive non connesso'); beep(); return; }
+  try{ await syncFromDrive(); say('Sync completata'); }catch(e){ say('Sync fallita'); beep(); }
 }
 function driveSyncEnabled(name){
   if(!VSF||VSF.cfg.driveSyncAll)return true;
@@ -634,6 +659,7 @@ async function initDisk(){
     try{ await idbSaveAll(disk); }catch(e){}
   }
   migrateDiskNames();
+  if(typeof VSExt!=='undefined')VSExt.ensureTemplates(disk);
   try{ await idbSaveAll(disk); }catch(e){}
   diskReady=true;
   return disk;
@@ -975,6 +1001,8 @@ function fit(){
   }
   viewCols=COLS; viewRows=ROWS; viewHscroll=0;
   FS=Math.max(5,Math.floor(Math.min(W/(COLS*cwu),H/(ROWS*chu)))-1);
+  const fsc=(VSF&&VSF.cfg.fontScale)||1;
+  FS=Math.max(5,Math.floor(FS*fsc));
   applyFont();
   CW=cx.measureText('M').width;
   CH=FS*chu;
@@ -990,12 +1018,17 @@ function drawCell(c,r,ch,inv){
   const x=c*CW,y=r*CH;
   if(inv){
     cx.save(); cx.shadowBlur=0;
-    cx.fillStyle=FG; cx.fillRect(x,y,CW+0.7,CH);
+    const fg=getFG();
+    cx.fillStyle=fg; cx.fillRect(x,y,CW+0.7,CH);
     cx.fillStyle='#000'; cx.fillText(ch,x+CW/2,y+CH/2+FS*0.05);
     cx.restore();
   }else{
     cx.fillText(ch,x+CW/2,y+CH/2+FS*0.05);
   }
+}
+function drawTxtInvRow(r,c,s,len){
+  s=s||'';
+  for(let i=0;i<(len||s.length)&&c+i<COLS;i++)drawCell(c+i,r,s[i]||' ',true);
 }
 function drawTxt(r,c,s,inv){
   s=s||'';
@@ -1021,6 +1054,10 @@ function hitTestFile(row,col){
   for(let i=0;i<fileListHits.length;i++){
     const h=fileListHits[i];
     if(h.row===row&&col>=h.colStart&&col<h.colEnd){
+      if(h.name==='__foprev__'){ filePageOpen=Math.max(0,filePageOpen-1); return '__menu__'; }
+      if(h.name==='__fonext__'){ filePageOpen=Math.min(Math.max(0,Math.ceil(Object.keys(disk||{}).length/FILES_PER_OPEN)-1),filePageOpen+1); return '__menu__'; }
+      if(h.name==='__fdprev__'){ filePageDir=Math.max(0,filePageDir-1); return '__menu__'; }
+      if(h.name==='__fdnext__'){ filePageDir=Math.min(Math.max(0,Math.ceil(Object.keys(disk||{}).length/FILES_PER_DIR)-1),filePageDir+1); return '__menu__'; }
       if(h.name.indexOf('recent:')===0)return h.name.slice(7);
       return h.name;
     }
@@ -1068,7 +1105,16 @@ function handleOptionsClick(clientX,clientY){
     return true;
   }
   if(act==='pageprev'){ optPage=Math.max(0,optPage-1); return true; }
-  if(act==='pagenext'){ optPage=Math.min(3,optPage+1); return true; }
+  if(act==='pagenext'){ optPage=Math.min(4,optPage+1); return true; }
+  if(act==='theme'){ const t=VSExt.cycleTheme(VSF.cfg); VSF.save(idbPutMeta); say('Tema: '+t); return true; }
+  if(act==='syncnow'){ syncDriveNow(); return true; }
+  if(act==='install'){ VSExt.promptInstall().then(ok=>say(ok?'Installazione avviata':'Install non disponibile')); return true; }
+  if(act==='font-'){ VSF.cfg.fontScale=Math.max(0.6,Math.round((VSF.cfg.fontScale-0.1)*10)/10); fit(); VSF.save(idbPutMeta); say('Font '+(VSF.cfg.fontScale*100)+'%'); return true; }
+  if(act==='font+'){ VSF.cfg.fontScale=Math.min(1.5,Math.round((VSF.cfg.fontScale+0.1)*10)/10); fit(); VSF.save(idbPutMeta); say('Font '+(VSF.cfg.fontScale*100)+'%'); return true; }
+  if(act==='lang'){ VSF.cfg.lang=VSF.cfg.lang==='en'?'it':'en'; VSF.save(idbPutMeta); say('Lingua: '+VSF.cfg.lang); return true; }
+  if(act==='toggle:boot'){ VSF.cfg.bootEnabled=!VSF.cfg.bootEnabled; VSF.save(idbPutMeta); return true; }
+  if(act==='toggle:crt'){ VSF.cfg.crtOff=!VSF.cfg.crtOff; VSExt.applyTheme(VSF.cfg); VSF.save(idbPutMeta); return true; }
+  if(act==='macro'){ ask('Testo macro? ',t=>{ VSF.cfg.macroText=t; VSF.save(idbPutMeta); say('Macro impostata'); }); return true; }
   return false;
 }
 function optToggle(key){
@@ -1078,6 +1124,8 @@ function optToggle(key){
   else if(key==='disk')VSF.cfg.soundDisk=!VSF.cfg.soundDisk;
   else if(key==='boot')VSF.cfg.soundBoot=!VSF.cfg.soundBoot;
   else if(key==='haptic')VSF.cfg.haptic=!VSF.cfg.haptic;
+  else if(key==='crt')VSF.cfg.crtOff=!VSF.cfg.crtOff;
+  if(key==='crt'&&typeof VSExt!=='undefined')VSExt.applyTheme(VSF.cfg);
   VSF.save(idbPutMeta);
 }
 function setVolume(v){ VSF.cfg.soundVolume=Math.max(0,Math.min(1,Math.round(v*10)/10)); VSF.save(idbPutMeta); say('Volume '+Math.round(VSF.cfg.soundVolume*100)+'%'); }
@@ -1088,20 +1136,78 @@ function cycleSoundProfile(){
 }
 function setWrapMargin(m){ VSF.cfg.wrapMargin=Math.max(40,Math.min(78,m)); VSF.save(idbPutMeta); say('Margine riforma: '+VSF.cfg.wrapMargin); }
 function setHelpLevel(n){ VSF.cfg.helpLevel=Math.max(0,Math.min(3,n)); S.helpLevel=VSF.cfg.helpLevel; VSF.save(idbPutMeta); say('Aiuto livello '+VSF.cfg.helpLevel); }
+
+const ctxMenuEl=document.getElementById('ctx-menu');
+function hideCtxMenu(){
+  if(!ctxMenuEl)return;
+  ctxMenuEl.hidden=true;
+  ctxMenuEl.style.display='none';
+  ctxFile=null;
+}
+function showFileCtxMenu(clientX,clientY,name){
+  if(!ctxMenuEl||!name||name==='__menu__')return;
+  ctxFile=name;
+  const acts=[
+    ['Apri',()=>openFileSafe(name,!name.endsWith('.DAT'))],
+    ['Rinomina',()=>{ askName('Rinominare '+name+' in? ',b=>{ if(!(name in disk))return noFile(name);
+      if(!b||b in disk)return say('Nome non valido'); storageRenameFile(name,b).then(()=>say(name+' -> '+b)); }); }],
+    ['Copia',()=>{ askName('Copia di '+name+' come? ',b=>{ if(!b||b in disk)return say('Nome occupato'); disk[b]=disk[name]; saveDisk(); say('Copiato'); }); }],
+    ['Esporta',()=>{ if(name in disk)printFile(name); }],
+    ['Cancella',()=>{ askYN('Cancellare '+name+'? ',y=>{ if(y)storageDeleteFile(name).then(()=>say(name+' cancellato')); }); }]
+  ];
+  ctxMenuEl.innerHTML='';
+  acts.forEach(([label,fn])=>{
+    const b=document.createElement('button');
+    b.textContent=label;
+    b.addEventListener('click',e=>{ e.stopPropagation(); hideCtxMenu(); fn(); });
+    ctxMenuEl.appendChild(b);
+  });
+  ctxMenuEl.style.display='flex';
+  ctxMenuEl.hidden=false;
+  ctxMenuEl.style.left=Math.min(clientX,innerWidth-150)+'px';
+  ctxMenuEl.style.top=Math.min(clientY,innerHeight-220)+'px';
+}
+function updateFileHover(clientX,clientY){
+  if(S.mode!=='open'&&S.mode!=='dir'){ if(fileHoverRow!==-1){ fileHoverRow=-1; } return; }
+  const cell=canvasToCell(clientX,clientY);
+  if(!cell){ fileHoverRow=-1; return; }
+  let row=-1;
+  for(let i=0;i<fileListHits.length;i++){
+    const h=fileListHits[i];
+    if(h.row===cell.row&&cell.col>=h.colStart&&cell.col<h.colEnd){ row=h.row; break; }
+  }
+  fileHoverRow=row;
+}
+
 function handleFileListClick(clientX,clientY){
   if(handleOptionsClick(clientX,clientY))return true;
   if(!disk||(S.mode!=='open'&&S.mode!=='dir'))return false;
   const cell=canvasToCell(clientX,clientY);
   if(!cell)return false;
   const name=hitTestFile(cell.row,cell.col);
+  if(name==='__menu__')return true;
   if(!name)return false;
   openFileSafe(name,!name.endsWith('.DAT'));
   return true;
 }
 function screenTapAt(clientX,clientY){
   if(S.prompt)return;
+  if(ctxMenuEl&&!ctxMenuEl.hidden){ hideCtxMenu(); return; }
   if(handleFileListClick(clientX,clientY))return;
-  if(S.mode==='edit'&&!S.prompt){ focusKeyin(); placeCursorAt(clientX,clientY); }
+  if(S.mode==='edit'&&!S.prompt){
+    const now=Date.now();
+    if(screenTapAt._last&&now-screenTapAt._last.t<400
+      &&Math.abs(clientX-screenTapAt._last.x)<24&&Math.abs(clientY-screenTapAt._last.y)<24){
+      focusKeyin();
+      placeCursorAt(clientX,clientY);
+      selectWordAt();
+      screenTapAt._last=null;
+      return;
+    }
+    screenTapAt._last={t:now,x:clientX,y:clientY};
+    focusKeyin();
+    placeCursorAt(clientX,clientY);
+  }
 }
 function center(r,s){ drawTxt(r,Math.max(0,Math.floor((COLS-s.length)/2)),s); }
 function padLine(parts){
@@ -1124,7 +1230,7 @@ function menuLines(){
 }
 const RULER='----+----1----+----2----+----3----+----4----+----5----+----6----+----7----'.padEnd(COLS);
 const KMENU='^K: BK marca C copia V muovi Y canc H nasc W scr|S salva D fatto X esci Q lascia';
-const QMENU='^Q: S/D riga E/X schermo R/C file W/Z scorri P prec F trova A sost 0-9 B/K blocco';
+const QMENU='^Q: S/D riga E/X schermo R/C file W/Z scorri P prec F trova A sost Y redo M macro 0-9 B/K blocco';
 const OMENU='^O: R righello  W a capo autom.  I livello aiuto  (esc annulla)';
 
 /* ------------------------------ AUDIO (beep, tastiera, disk drive) ------------------------------ */
@@ -1341,6 +1447,22 @@ function wordRight(){
   while(i<line.length&&line[i]===' ')i++;
   if(i>=line.length&&S.ln<S.doc.length-1){S.ln++;S.col=0;} else S.col=i;
 }
+function selectWordAt(pos){
+  const ln=pos?pos.ln:S.ln, col=pos?pos.col:S.col;
+  const line=S.doc[ln]||'';
+  if(!line.trim())return;
+  let c=Math.min(col,line.length-1);
+  if(c<0)c=0;
+  while(c>0&&line[c-1]===' ')c--;
+  if(c>=line.length||line[c]===' ')return;
+  let a=c,b=c;
+  while(a>0&&line[a-1]!==' ')a--;
+  while(b<line.length&&line[b]!==' ')b++;
+  S.blk={s:{ln,col:a},e:{ln,col:b}};
+  S.blkVis=true;
+  S.ln=ln; S.col=a;
+  say('Parola selezionata');
+}
 function lineStart(){ S.col=0; }
 function lineEnd(){ S.col=(S.doc[S.ln]||'').length; }
 function screenTop(){ S.ln=S.top;S.col=0; }
@@ -1382,8 +1504,60 @@ function placeCursorAt(clientX,clientY){
 }
 
 /* ------------------------------ EDITING ------------------------------ */
-function pushUndo(){ S.undoStack.push({doc:S.doc.slice(),ln:S.ln,col:S.col}); if(S.undoStack.length>200)S.undoStack.shift(); }
-function undo(){ const u=S.undoStack.pop(); if(!u){beep();return;} S.doc=u.doc;S.ln=u.ln;S.col=u.col;markDirty();clampCursor();ensureVisible();say('Annullato'); }
+function pushUndo(){
+  S.redoStack.length=0;
+  S.undoStack.push({doc:S.doc.slice(),ln:S.ln,col:S.col});
+  if(S.undoStack.length>200)S.undoStack.shift();
+}
+function undo(){
+  const u=S.undoStack.pop();
+  if(!u){beep();return;}
+  S.redoStack.push({doc:S.doc.slice(),ln:S.ln,col:S.col});
+  S.doc=u.doc;S.ln=u.ln;S.col=u.col;markDirty();clampCursor();ensureVisible();say('Annullato');
+}
+function redo(){
+  const r=S.redoStack.pop();
+  if(!r){beep();return;}
+  S.undoStack.push({doc:S.doc.slice(),ln:S.ln,col:S.col});
+  S.doc=r.doc;S.ln=r.ln;S.col=r.col;markDirty();clampCursor();ensureVisible();
+  say(typeof VSExt!=='undefined'?VSExt.t('redo'):'Ripristinato');
+}
+function refreshSpellMarks(){
+  if(typeof VSExt==='undefined')return;
+  const set=VSExt.buildSpellSet(VSF.cfg);
+  S.spellMarks=VSExt.findSpellMarks(S.doc,set);
+  S.spellPos=0;
+}
+function gotoNextSpell(){
+  if(!S.spellMarks||!S.spellMarks.length){ say('SpellStar: OK'); return; }
+  const m=VSExt.nextSpellMark(S.spellMarks,{ln:S.ln,col:S.col+1});
+  if(!m){ say('SpellStar: fine lista'); return; }
+  S.ln=m.ln; S.col=m.start; ensureVisible();
+  say('SpellStar: '+m.word+' (^F7 prossimo, A=ignora)');
+}
+function ignoreSpellWord(){
+  if(!S.spellMarks||!S.spellMarks.length)return;
+  const m=VSExt.nextSpellMark(S.spellMarks,{ln:S.ln,col:S.col});
+  if(m){ VSExt.addUserWord(VSF.cfg,m.word); VSF.save(idbPutMeta); refreshSpellMarks(); gotoNextSpell(); }
+}
+function runMacro(){
+  const t=VSF&&VSF.cfg.macroText;
+  if(!t){ say('Macro non impostata (Opzioni)'); beep(); return; }
+  if(S.mode!=='edit'){ say('Apri un documento'); beep(); return; }
+  pushUndo();
+  insertTextRaw(t);
+  markDirty();
+  ensureVisible();
+  say(typeof VSExt!=='undefined'?VSExt.t('macroRun'):'Macro eseguita');
+}
+function isSpellCell(ln,c){
+  if(!S.spellMarks)return false;
+  for(let i=0;i<S.spellMarks.length;i++){
+    const m=S.spellMarks[i];
+    if(m.ln===ln&&c>=m.start&&c<m.end)return true;
+  }
+  return false;
+}
 function wrapLine(li){
   const line=S.doc[li]||'', rm=getRM();
   if(line.length<=rm)return;
@@ -1633,9 +1807,10 @@ function openFile(name,isDoc){
   if(!S.doc.length)S.doc=[''];
   S.ln=0;S.col=0;S.top=0;S.blk=null;S.blkVis=true;S.dirty=false;
   clearDirtyUI();
-  S.undoStack.length=0;S.prevPos=null;S.markers=new Array(10).fill(null);S.pending=null;
+  S.undoStack.length=0;S.redoStack.length=0;S.prevPos=null;S.markers=new Array(10).fill(null);S.pending=null;
   S.mode='edit';
   if(VSF){ VSF.pushRecent(n); VSF.save(idbPutMeta); }
+  refreshSpellMarks();
   say(exists?'Aperto '+n:'Nuovo file '+n);
   requestAnimationFrame(fit);
 }
@@ -1664,17 +1839,20 @@ function abandon(){
 function noFile(n){ say(n+': file non trovato'); beep(); }
 function printFile(n){
   if(!(n in disk))return noFile(n);
-  askYN('Stampare '+n+' (anteprima)? S=Stampa N=Esporta ',y=>{
-    if(y){ if(VSF.printDocument(n,disk[n],FONT.replace(/"/g,'')))say('Anteprima stampa'); else beep(); }
+  say('S=Stampa  N=Esporta  (usa prompt S/N)');
+  askYN('Stampare '+n+'? ',y=>{
+    if(y){ VSF.printDocument(n,disk[n],FONT.replace(/"/g,'')); say('Anteprima stampa/PDF'); }
     else{ say('Esportazione di '+n+' ...'); exportViaFSA(n); }
   });
 }
 function runSpellStar(){
   askName('Controllare ortografia di quale file? ',n=>{
     if(!(n in disk))return noFile(n);
-    const bad=VSLib.spellUnknown(disk[n]||'');
+    if(S.mode==='edit'&&S.filename===n){ refreshSpellMarks(); gotoNextSpell(); return; }
+    const set=VSExt.buildSpellSet(VSF.cfg);
+    const bad=VSExt.findSpellMarks((disk[n]||'').split('\n'),set);
     if(!bad.length)say('SpellStar: nessun errore rilevato');
-    else say('SpellStar: '+bad.slice(0,8).join(' ')+(bad.length>8?' ... ('+bad.length+')':''));
+    else say('SpellStar: '+bad.length+' errori — apri il file e premi F7');
   },true);
 }
 function runMailMerge(){
@@ -1682,16 +1860,20 @@ function runMailMerge(){
     if(!(tpl in disk))return noFile(tpl);
     askName('File dati CSV? ',dat=>{
       if(!(dat in disk))return noFile(dat);
-      askName('Prefisso output? ',pre=>{
-        const prefx=normDiskName(pre,true).replace(/\..*$/,'');
-        const merged=VSLib.mergeAll(disk[tpl],disk[dat]);
-        if(!merged.length){ say('Nessuna riga dati'); beep(); return; }
-        merged.forEach((m,i)=>{
-          const fn=(prefx+String(i+1).padStart(2,'0')).slice(0,8)+EXT;
-          disk[fn]=m.content;
-        });
-        saveDisk().then(()=>say('MailMerge: '+merged.length+' file creati'));
-      },true);
+      const merged=VSLib.mergeAll(disk[tpl],disk[dat]);
+      if(!merged.length){ say('Nessuna riga dati'); beep(); return; }
+      const preview=merged[0].content.slice(0,200);
+      askYN((VSExt?VSExt.t('preview'):'Anteprima OK? ')+' '+preview.slice(0,60)+'... ',ok=>{
+        if(!ok)return;
+        askName('Prefisso output? ',pre=>{
+          const base=(pre||'OUT').toUpperCase().replace(/[^A-Z0-9._\-]/g,'').slice(0,8);
+          merged.forEach((m,i)=>{
+            const fn=(base+String(i+1).padStart(2,'0')).slice(0,8)+EXT;
+            disk[fn]=m.content;
+          });
+          saveDisk().then(()=>say('MailMerge: '+merged.length+' file creati'));
+        },true);
+      });
     },true);
   },true);
 }
@@ -1707,14 +1889,20 @@ function restoreFileVersion(){
     const list=await idbListVersions(n);
     if(!list.length){ say('Nessuna versione salvata'); beep(); return; }
     const v=list[0];
-    askYN('Ripristinare versione del '+new Date(v.ts).toLocaleString()+'? ',y=>{
+    const diff=VSExt?VSExt.textDiff(disk[n],v.content):{add:0,del:0};
+    askYN('Ripristinare '+new Date(v.ts).toLocaleString()+'? Diff +'+diff.add+'/-'+diff.del+' ',y=>{
       if(!y)return;
       disk[n]=v.content;
       saveDiskFile(n);
-      if(S.filename===n&&S.mode==='edit'){ S.doc=v.content.split(/\r?\n/); S.dirty=true; markDirty(); }
+      if(S.filename===n&&S.mode==='edit'){ S.doc=v.content.split(/\r?\n/); S.dirty=true; markDirty(); refreshSpellMarks(); }
       say('Versione ripristinata');
     });
   },true);
+}
+function diskUsageBar(row){
+  const used=Object.keys(disk||{}).reduce((a,n)=>a+(disk[n]||'').length,0);
+  const pct=Math.min(100,Math.round(used/DISK_LIMIT*100));
+  drawTxt(row,1,('Disco A: ['+('#'.repeat(Math.round(pct/5))).padEnd(20,'.')+'] '+pct+'%').slice(0,COLS));
 }
 
 /* ------------------------------ SOTTOMENU ^K ^Q ^O ------------------------------ */
@@ -1756,6 +1944,8 @@ function handleQ(ch){
     case 'K': { const b=normBlock(); if(b){savePrev();gotoPos(b.b);}else beep(); break; }
     case 'F': doFind(); break;
     case 'A': doReplaceAsk(); break;
+    case 'Y': redo(); break;
+    case 'M': runMacro(); break;
     default: beep();
   }
 }
@@ -1907,6 +2097,11 @@ function dateStr(){
 }
 function keyOpen(e){
   if(e.code==='F1'){ openHelp(); return; }
+  if(e.code==='PageUp'){ filePageOpen=Math.max(0,filePageOpen-1); return; }
+  if(e.code==='PageDown'){
+    const p=Math.max(1,Math.ceil(Object.keys(disk||{}).length/FILES_PER_OPEN));
+    filePageOpen=Math.min(p-1,filePageOpen+1); return;
+  }
   if(e.ctrlKey)return;
   const k=(e.key||'').toLowerCase();
   switch(k){
@@ -1934,6 +2129,17 @@ function keyOpen(e){
     default: if(k.length===1&&k>=' ')beep();
   }
 }
+function keyDir(e){
+  if(e.code==='PageUp'){ filePageDir=Math.max(0,filePageDir-1); return; }
+  if(e.code==='PageDown'){
+    const p=Math.max(1,Math.ceil(Object.keys(disk||{}).length/FILES_PER_DIR));
+    filePageDir=Math.min(p-1,filePageDir+1); return;
+  }
+  if(e.code==='Escape'){ S.mode='open'; return; }
+  if(e.ctrlKey)return;
+  const k=(e.key||'').toLowerCase();
+  if(k.length===1&&k>=' ')beep();
+}
 
 /* ------------------------------ TASTIERA: EDITOR ------------------------------ */
 function keyEdit(e){
@@ -1952,6 +2158,8 @@ function keyEdit(e){
     case 'F2': saveFile('cont'); return;
     case 'F3': doFind(); return;
     case 'F4': doReplaceAsk(); return;
+    case 'F7': gotoNextSpell(); return;
+    case 'F8': runMacro(); return;
     case 'ArrowLeft': curLeft(); return;
     case 'ArrowRight': curRight(); return;
     case 'ArrowUp': curUp(); return;
@@ -1967,14 +2175,15 @@ function keyEdit(e){
     case 'Tab': insertTab(); return;
     case 'Escape': S.msg=''; return;
   }
+  if(!ctrl&&!e.altKey&&(k==='a'||k==='A')&&S.spellMarks&&S.spellMarks.length){ ignoreSpellWord(); return; }
   if(ctrl&&letter){ ctrlCmd(letter); return; }
   if(!ctrl&&!e.altKey&&k&&k.length===1&&k>=' '){ insertChar(k); return; }
 }
 
 /* ------------------------------ DISEGNO SCHERMATE ------------------------------ */
 function statusStr(){
-  const star=S.dirty?'* ':'';
-  const fn=S.filename?(star+S.filename+'  '):'';
+  const unsaved=S.dirty?(typeof VSExt!=='undefined'?VSExt.t('unsaved'):'* NON SALVATO '):'';
+  const fn=S.filename?(unsaved+S.filename+'  '):'';
   return fn+'Col '+(S.col+1)+'  Rg '+(S.ln+1)+'  Pg '+(Math.floor(S.ln/PAGE_LEN)+1);
 }
 function bottomLine(showStatus){
@@ -1999,6 +2208,7 @@ function drawEdit(){
     const li=S.top+i;
     const s=(S.doc[li]!==undefined?S.doc[li]:'').slice(0,COLS);
     drawTxt(r+i,0,s.padEnd(COLS));
+    if(S.spellMarks){ for(let c=0;c<s.length;c++)if(isSpellCell(li,c))drawCell(c,r+i,s[c],true); }
     if(blk&&S.blkVis){
       let a=-1,b=-1;
       if(li>blk.a.ln&&li<blk.b.ln){a=0;b=COLS;}
@@ -2039,6 +2249,12 @@ function drawEditZoom(){
     const line=(S.doc[li]!==undefined?S.doc[li]:'');
     const vis=line.slice(viewHscroll,viewHscroll+viewCols);
     for(let c=0;c<viewCols;c++)drawCell(c,i,(c<vis.length?vis[c]:' '));
+    if(S.spellMarks&&li<S.doc.length){
+      for(let c=0;c<vis.length;c++){
+        const abs=viewHscroll+c;
+        if(isSpellCell(li,abs))drawCell(c,i,vis[c],true);
+      }
+    }
     if(blk&&S.blkVis){
       let a=-1,b=-1;
       if(li>blk.a.ln&&li<blk.b.ln){a=viewHscroll;b=viewHscroll+viewCols;}
@@ -2071,40 +2287,46 @@ function drawOpen(){
   drawTxt(9,1,'N  Apri un non-documento');
   drawTxt(10,1,driveStatusLine().slice(0,52));
   drawTxt(10,58,'M  MailMerge');
-  drawTxt(11,1,'S  SpellStar (^QN parole in edit)');
+  drawTxt(11,1,'S  SpellStar  F7  ^QY redo');
   const recent=(VSF&&VSF.cfg.recentFiles||[]).filter(n=>disk&&n in disk).slice(0,3);
   if(recent.length){
     drawTxt(12,1,'RECENTI:');
     recent.forEach((n,i)=>{
       const c=10+i*14;
-      drawTxt(12,c,n.padEnd(12));
+      if(fileHoverRow===12)drawTxtInvRow(12,c,n.padEnd(12),12);
+      else drawTxt(12,c,n.padEnd(12));
       registerFileHit('recent:'+n,12,c,c+12);
     });
   }
   drawTxt(13,1,'A: FILE SUL DISCO ('+dateStr()+'):');
   const names=Object.keys(disk).sort();
-  if(!names.length)drawTxt(14,3,'(disco vuoto)');
-  names.slice(0,7).forEach((n,i)=>{
+  const pages=Math.max(1,Math.ceil(names.length/FILES_PER_OPEN));
+  if(filePageOpen>=pages)filePageOpen=0;
+  const slice=names.slice(filePageOpen*FILES_PER_OPEN,(filePageOpen+1)*FILES_PER_OPEN);
+  if(!slice.length)drawTxt(14,3,'(disco vuoto)');
+  slice.forEach((n,i)=>{
     const row=14+i;
     const tag=extHandles.has(n)?'*':'';
-    drawTxt(row,3,(n+tag).padEnd(14)+String(fmtSize((disk[n]||'').length)).padStart(7));
+    const label=(n+tag).padEnd(14)+String(fmtSize((disk[n]||'').length)).padStart(7);
+    if(fileHoverRow===row)drawTxtInvRow(row,3,label,28);
+    else drawTxt(row,3,label);
     registerFileHit(n,row,3,28);
   });
-  if(names.length>7)drawTxt(22,3,'...e altri '+(names.length-7));
-  drawTxt(23,1,'Digita un comando o clicca un file per aprirlo.');
+  if(pages>1){
+    drawTxt(21,3,'< Pag '+(filePageOpen+1)+'/'+pages+' >  PgSu/PgGiu');
+    registerFileHit('__foprev__',21,3,21,8);
+    registerFileHit('__fonext__',21,18,21,26);
+  }
+  diskUsageBar(22);
+  drawTxt(23,1,(VSExt?VSExt.t('clickFile'):'Clicca un file')+' (tieni premuto=menu) o digita un comando.');
   bottomLine(false);
-}
-function statusStr(){
-  const star=S.dirty?'* NON SALVATO ':'';
-  const fn=S.filename?(star+S.filename+'  '):'';
-  return fn+'Col '+(S.col+1)+'  Rg '+(S.ln+1)+'  Pg '+(Math.floor(S.ln/PAGE_LEN)+1);
 }
 function yn(v){ return v?'ON':'OFF'; }
 function drawOptions(){
   clearFileHits();
   clearOptionHits();
   showGoogleLoginPanel(false);
-  center(0,'OPZIONI VaaardStar  ('+(optPage+1)+'/4)');
+  center(0,'OPZIONI VaaardStar  ('+(optPage+1)+'/5)');
   if(optPage===0){
     drawTxt(2,2,'--- Google Drive ---');
     if(!googleConfigured())drawTxt(4,4,'Configura google-config.js per OAuth');
@@ -2137,18 +2359,31 @@ function drawOptions(){
     drawTxt(6,4,'A capo auto ['+yn(VSF.cfg.wrapOn)+']'); registerOptionHit('toggle:wrap',6,4,6,26);
     drawTxt(7,4,'Margine riforma: '+VSF.cfg.wrapMargin+'  [-] [+]');
     registerOptionHit('margin-',7,4,7,32); registerOptionHit('margin+',7,36,7,42);
-    drawTxt(9,4,'^QN conteggio parole nel documento');
-  }else{
+    drawTxt(9,4,'^QN parole  F7 SpellStar  ^QY redo  F8 macro');
+  }else if(optPage===3){
     drawTxt(2,2,'--- Sync / Drive ---');
-    drawTxt(4,4,'Sync tutti i file ['+yn(VSF.cfg.driveSyncAll)+']'); registerOptionHit('syncall',4,4,4,32);
-    drawTxt(6,4,'File sul disco (clicca per sync ON/OFF):');
-    const names=Object.keys(disk||{}).sort().slice(0,8);
+    const ls=VSF.cfg.lastSyncAt?new Date(VSF.cfg.lastSyncAt).toLocaleString():'mai';
+    drawTxt(4,4,(VSExt?VSExt.t('lastSync'):'Ultima sync:')+' '+ls);
+    if(VSF.cfg.lastSyncErr)drawTxt(5,4,'Errore: '+VSF.cfg.lastSyncErr.slice(0,50));
+    drawTxt(6,4,'> Sincronizza ora'); registerOptionHit('syncnow',6,4,6,24);
+    drawTxt(8,4,'Sync tutti ['+yn(VSF.cfg.driveSyncAll)+']'); registerOptionHit('syncall',8,4,8,28);
+    drawTxt(10,4,'File (clicca sync ON/OFF):');
+    const names=Object.keys(disk||{}).sort().slice(0,6);
     names.forEach((n,i)=>{
-      const row=8+i, on=VSF.cfg.driveSyncAll||VSF.cfg.driveSyncFiles[n]!==false;
-      const link=extHandles.has(n)?' @':'';
-      drawTxt(row,6,(on?'[X] ':'[ ] ')+n+link);
+      const row=11+i, on=VSF.cfg.driveSyncAll||VSF.cfg.driveSyncFiles[n]!==false;
+      drawTxt(row,6,(on?'[X] ':'[ ] ')+n+(extHandles.has(n)?' @':''));
       registerOptionHit('syncfile:'+n,row,6,row,22);
     });
+  }else{
+    drawTxt(2,2,'--- Aspetto ---');
+    drawTxt(4,4,'Tema: '+(VSF.cfg.theme||'white')+'  (clicca)'); registerOptionHit('theme',4,4,4,28);
+    drawTxt(5,4,'Font: '+Math.round(VSF.cfg.fontScale*100)+'%  [-] [+]');
+    registerOptionHit('font-',5,4,5,24); registerOptionHit('font+',5,32,5,38);
+    drawTxt(6,4,'Scanline CRT ['+yn(!VSF.cfg.crtOff)+']'); registerOptionHit('toggle:crt',6,4,6,28);
+    drawTxt(7,4,'Boot animato ['+yn(VSF.cfg.bootEnabled!==false)+']'); registerOptionHit('toggle:boot',7,4,7,28);
+    drawTxt(8,4,'Lingua: '+VSF.cfg.lang+'  (clicca)'); registerOptionHit('lang',8,4,8,24);
+    drawTxt(10,4,'> Installa app PWA'); registerOptionHit('install',10,4,10,24);
+    drawTxt(11,4,'> Imposta macro testo'); registerOptionHit('macro',11,4,11,26);
   }
   drawTxt(20,2,'< Pag prec'); registerOptionHit('pageprev',20,2,20,14);
   drawTxt(20,40,'Pag succ >'); registerOptionHit('pagenext',20,40,20,52);
@@ -2158,7 +2393,7 @@ function drawOptions(){
 function keyOptions(e){
   if(e.code==='Escape'){ closeOptions(); return; }
   if(e.code==='PageUp'||e.key===','){ optPage=Math.max(0,optPage-1); return; }
-  if(e.code==='PageDown'||e.key==='.'){ optPage=Math.min(3,optPage+1); return; }
+  if(e.code==='PageDown'||e.key==='.'){ optPage=Math.min(4,optPage+1); return; }
   if(e.ctrlKey)return;
   const k=(e.key||'').toLowerCase();
   if(k==='f'){ toggleFullscreen(); return; }
@@ -2171,15 +2406,24 @@ function drawDir(){
   clearFileHits();
   center(1,'ELENCO FILE  A:');
   const names=Object.keys(disk).sort();
-  names.slice(0,18).forEach((n,i)=>{
+  const pages=Math.max(1,Math.ceil(names.length/FILES_PER_DIR));
+  if(filePageDir>=pages)filePageDir=0;
+  const slice=names.slice(filePageDir*FILES_PER_DIR,(filePageDir+1)*FILES_PER_DIR);
+  slice.forEach((n,i)=>{
     const row=3+i;
     const tag=extHandles.has(n)?'*':'';
-    drawTxt(row,4,(n+tag).padEnd(16)+fmtSize((disk[n]||'').length).padStart(7)+'   '+dateStr());
+    const label=(n+tag).padEnd(16)+fmtSize((disk[n]||'').length).padStart(7)+'   '+dateStr();
+    if(fileHoverRow===row)drawTxtInvRow(row,4,label,28);
+    else drawTxt(row,4,label);
     registerFileHit(n,row,4,28);
   });
-  if(names.length>18)drawTxt(21,4,'...'+(names.length-18)+' altri');
-  const used=names.reduce((a,n)=>a+(disk[n]||'').length,0);
-  drawTxt(22,4,names.length+' file   '+fmtSize(used)+' usati   '+fmtSize(Math.max(0,360*1024-used))+' liberi');
+  if(names.length>slice.length)drawTxt(20,4,'...'+(names.length-slice.length)+' altri');
+  if(pages>1){
+    drawTxt(21,4,'< Pag '+(filePageDir+1)+'/'+pages+' >  PgSu/PgGiu');
+    registerFileHit('__fdprev__',21,4,21,8);
+    registerFileHit('__fdnext__',21,18,21,26);
+  }
+  diskUsageBar(22);
   drawTxt(23,4,'Clicca un file per aprirlo, un tasto per tornare al menu');
   bottomLine(false);
 }
@@ -2215,7 +2459,7 @@ function frame(){
   const fh=isPortraitZoom()?viewRows*CH:ROWS*CH;
   cx.fillStyle='#000'; cx.fillRect(0,0,fw,fh);
   cx.save();
-  cx.fillStyle=FG;
+  cx.fillStyle=getFG();
   cx.shadowColor='rgba(255,255,255,.5)';
   cx.shadowBlur=Math.max(1,FS*0.08);
   switch(S.mode){
@@ -2232,7 +2476,10 @@ function frame(){
 }
 function loop(t){
   if(t-lastBlink>530){ blinkOn=!blinkOn; lastBlink=t; }
-  if(S.mode==='boot'&&Date.now()-S.bootAt>1600)S.mode='open';
+  if(S.mode==='boot'){
+    if(VSF&&VSF.cfg.bootEnabled===false)S.mode='open';
+    else if(Date.now()-S.bootAt>1600)S.mode='open';
+  }
   frame();
   requestAnimationFrame(loop);
 }
@@ -2258,7 +2505,7 @@ function dispatch(e){
     case 'exit': if(e.key==='r'||e.key==='R'||e.key==='Enter'||e.code==='Enter')location.reload(); break;
     case 'open': keyOpen(e); break;
     case 'options': keyOptions(e); break;
-    case 'dir': S.mode='open'; break;
+    case 'dir': keyDir(e); break;
     case 'help': keyHelp(e); break;
     case 'dos': keyDos(e); break;
     case 'edit': keyEdit(e); break;
@@ -2331,10 +2578,40 @@ scrbEl.addEventListener('touchend',e=>{
 });
 scrbEl.addEventListener('touchcancel',()=>{ panState=null; updateEditScrollClass(); });
 cv.addEventListener('click',e=>{ screenTapAt(e.clientX,e.clientY); });
-cv.addEventListener('pointerup',e=>{
-  if(e.pointerType!=='touch')return;
-  if(panState&&panState.moved)return;
-  screenTapAt(e.clientX,e.clientY);
+cv.addEventListener('mousemove',e=>{ updateFileHover(e.clientX,e.clientY); });
+function onFileContextMenu(e){
+  e.preventDefault();
+  if(S.prompt||!(S.mode==='open'||S.mode==='dir'))return;
+  const cell=canvasToCell(e.clientX,e.clientY);
+  if(!cell)return;
+  let name=hitTestFile(cell.row,cell.col);
+  if(!name||name==='__menu__'||name==='__foprev__'||name==='__fonext__'||name==='__fdprev__'||name==='__fdnext__')return;
+  if(name.indexOf('recent:')===0)name=name.slice(7);
+  showFileCtxMenu(e.clientX,e.clientY,name);
+}
+cv.addEventListener('contextmenu',onFileContextMenu);
+scrbEl.addEventListener('contextmenu',onFileContextMenu);
+document.addEventListener('pointerdown',e=>{
+  if(!ctxMenuEl||ctxMenuEl.hidden)return;
+  if(!e.target.closest('#ctx-menu'))hideCtxMenu();
+});
+let fileLongPressTimer=null;
+scrbEl.addEventListener('touchstart',e=>{
+  if(S.prompt||!(S.mode==='open'||S.mode==='dir')||!e.touches[0])return;
+  const t=e.touches[0];
+  fileLongPressTimer=setTimeout(()=>{
+    fileLongPressTimer=null;
+    const cell=canvasToCell(t.clientX,t.clientY);
+    if(!cell)return;
+    let name=hitTestFile(cell.row,cell.col);
+    if(!name||name==='__menu__'||name==='__foprev__'||name==='__fonext__'||name==='__fdprev__'||name==='__fdnext__')return;
+    if(name.indexOf('recent:')===0)name=name.slice(7);
+    if(VSF)VSF.haptic(20);
+    showFileCtxMenu(t.clientX,t.clientY,name);
+  },520);
+},{passive:true});
+['touchend','touchcancel','touchmove'].forEach(ev=>{
+  scrbEl.addEventListener(ev,()=>{ if(fileLongPressTimer){ clearTimeout(fileLongPressTimer); fileLongPressTimer=null; } },{passive:true});
 });
 function onDocWheel(e){
   if(S.mode!=='edit'||S.prompt)return;
@@ -2461,7 +2738,7 @@ function buildBar(){
   };
   mkKbRow(pAbc,'QWERTYUIOP'.split('').map(c=>[c]),letterAct);
   mkKbRow(pAbc,'ASDFGHJKL'.split('').map(c=>[c]),letterAct);
-  mkKbRow(pAbc,[['Z','Z'],['X','X'],['C','C'],['V','V'],['B','B'],['N','N'],['M','M'],[',',','],['.','.']],letterAct);
+  mkKbRow(pAbc,[['Z','Z'],['X','X'],['C','C'],['V','V'],['B','B'],['N','N'],['M','M'],['?','?'],[',',','],['.','.']],letterAct);
   mkKbRow(p123,'1234567890'.split('').map(c=>[c]),c=>typeFromBar(c));
   mkKbRow(pPunct,[['.','.'],[',',','],[';',';'],[':',':'],['!','!'],['?','?'],['-','-'],['_','_'],['(',')'],['/','/'],['\\','\\'],['@','@'],['"','"']],c=>typeFromBar(c));
   mkKbRow(pPunct,[["'","'"],['+','+'],['=','='],['[',']'],['{','}'],['<','>'],['|','|'],['#','#'],['%','%'],['&','&'],['*','*']],c=>typeFromBar(c));
@@ -2633,9 +2910,11 @@ async function bootApp(){
   setupShareTarget();
   registerSW();
   setupLaunchQueue();
+  if(typeof VSExt!=='undefined')VSExt.setupInstallPrompt();
   if(VSF){
     await VSF.load(idbGetMeta);
     VSF.applyToState(S);
+    if(VSF.cfg.bootEnabled===false)S.mode='open';
   }
   updateDriveBtn();
   await initDisk();

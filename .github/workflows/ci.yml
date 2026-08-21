@@ -1,0 +1,18 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'cursor/**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run vs-lib unit tests
+        run: node -e "require('./js/vs-lib.js'); const r=globalThis.VSLib.runTests(); const bad=r.filter(x=>!x.ok); if(bad.length){ console.error(bad); process.exit(1);} console.log('OK', r.length, 'tests');"
