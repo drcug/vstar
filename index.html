@@ -41,8 +41,12 @@
       repeating-linear-gradient(0deg,rgba(0,0,0,.20) 0 1px,transparent 1px 3px),
       radial-gradient(ellipse at center,transparent 62%,rgba(0,0,0,.45) 100%);}
   /* ------- barra comandi touch ------- */
-  #bar{display:none;flex:0 0 auto;background:#000;border-top:1px solid #444;padding:6px 4px calc(6px + env(safe-area-inset-bottom));flex-direction:column;gap:5px;z-index:4;max-height:46vh;overflow-y:auto;-webkit-overflow-scrolling:touch}
+  #bar{display:none;flex:0 0 auto;flex-direction:column;background:#000;border-top:1px solid #444;
+    padding:6px 4px calc(6px + env(safe-area-inset-bottom));gap:0;z-index:4;max-height:46vh;overflow:hidden}
   body.showbar #bar{display:flex}
+  #kb-scroll{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;
+    display:flex;flex-direction:column;gap:5px;padding-bottom:4px}
+  #kb-space{flex:0 0 auto;border-top:1px solid #444;padding-top:5px;margin-top:2px}
   body.text-only #bar{display:none!important}
   body.text-only.showbar #togglebar{opacity:.55}
   body.dirty-doc #togglebar{box-shadow:0 0 0 2px #f80}
@@ -98,12 +102,14 @@
 <div id="wrap">
   <div id="scrb"><canvas id="scr"></canvas></div>
   <div id="bar" class="kb-abc">
-    <div class="kb-row" id="kb-nav"></div>
-    <div class="kb-row" id="kb-tabs"></div>
-    <div class="kb-panel" id="kb-panel-abc"></div>
-    <div class="kb-panel" id="kb-panel-123"></div>
-    <div class="kb-panel" id="kb-panel-punct"></div>
-    <div class="kb-panel" id="kb-panel-accent"></div>
+    <div id="kb-scroll">
+      <div class="kb-row" id="kb-nav"></div>
+      <div class="kb-row" id="kb-tabs"></div>
+      <div class="kb-panel" id="kb-panel-abc"></div>
+      <div class="kb-panel" id="kb-panel-123"></div>
+      <div class="kb-panel" id="kb-panel-punct"></div>
+      <div class="kb-panel" id="kb-panel-accent"></div>
+    </div>
     <div class="kb-row" id="kb-space"></div>
   </div>
 </div>
@@ -2400,7 +2406,7 @@ function buildBar(){
   const p123=document.getElementById('kb-panel-123');
   const pPunct=document.getElementById('kb-panel-punct');
   const pAccent=document.getElementById('kb-panel-accent');
-  mkKbRow(nav,[['◄','ArrowLeft',0,1],['▲','ArrowUp',0,1],['▼','ArrowDown',0,1],['►','ArrowRight',0,1],['⌫','Backspace',0,1],['CANC','Delete'],['INVIO','Enter'],['ESC','Escape']],c=>pressCode(c));
+  mkKbRow(nav,[['◄','ArrowLeft',0,1],['▲','ArrowUp',0,1],['▼','ArrowDown',0,1],['►','ArrowRight',0,1],['⌫','Backspace',0,1],['CANC','Delete'],['ESC','Escape']],c=>pressCode(c));
   const bc=mkBtn('CTRL',()=>{ ctrlArmed=!ctrlArmed; bc.classList.toggle('on',ctrlArmed); });
   bc.id='btn-ctrl';
   const bCaps=mkBtn('CAPS',()=>{ capsLock=!capsLock; bCaps.classList.toggle('on',capsLock); });

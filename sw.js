@@ -1,5 +1,5 @@
 'use strict';
-const CACHE='vaaardstar-v3';
+const CACHE='vaaardstar-v4';
 const ASSETS=[
   './',
   './index.html',
