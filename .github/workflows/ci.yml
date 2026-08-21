@@ -15,4 +15,6 @@ jobs:
         with:
           node-version: '20'
       - name: Run vs-lib unit tests
-        run: node -e "require('./js/vs-lib.js'); const r=globalThis.VSLib.runTests(); const bad=r.filter(x=>!x.ok); if(bad.length){ console.error(bad); process.exit(1);} console.log('OK', r.length, 'tests');"
+        run: node -e "require('./js/vs-lib.js'); const r=globalThis.VSLib.runTests(); const bad=r.filter(x=>!x.ok); if(bad.length){ console.error(bad); process.exit(1);} console.log('OK vs-lib', r.length, 'tests');"
+      - name: Run vs-ext unit tests
+        run: node -e "require('./js/vs-ext.js'); const r=globalThis.VSExt.runTests(); const bad=r.filter(x=>!x.ok); if(bad.length){ console.error(bad); process.exit(1);} console.log('OK vs-ext', r.length, 'tests');"

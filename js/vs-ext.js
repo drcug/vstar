@@ -96,6 +96,46 @@
     if(cfg.userDict.indexOf(w)<0)cfg.userDict.push(w);
   }
 
+  function editDist(a,b){
+    const m=a.length,n=b.length;
+    const dp=new Array(n+1);
+    for(let j=0;j<=n;j++)dp[j]=j;
+    for(let i=1;i<=m;i++){
+      let prev=dp[0]; dp[0]=i;
+      for(let j=1;j<=n;j++){
+        const tmp=dp[j];
+        dp[j]=a[i-1]===b[j-1]?prev:1+Math.min(prev,dp[j],dp[j-1]);
+        prev=tmp;
+      }
+    }
+    return dp[n];
+  }
+
+  function suggestWords(word,set,max){
+    const w=String(word||'').toLowerCase();
+    if(!w||w.length<2)return [];
+    const out=[];
+    set.forEach(dict=>{
+      if(dict===w)return;
+      if(dict[0]!==w[0]&&editDist(w,dict)>2)return;
+      const d=editDist(w,dict);
+      if(d<=2||(dict.startsWith(w.slice(0,3))&&Math.abs(dict.length-w.length)<=2))out.push({word:dict,d});
+    });
+    out.sort((a,b)=>a.d-b.d||a.word.length-b.word.length);
+    return out.slice(0,max||5).map(x=>x.word);
+  }
+
+  function runTests(){
+    const tests=[];
+    function test(name,fn){ try{ fn(); tests.push({name,ok:true}); }catch(e){ tests.push({name,ok:false,err:e.message}); } }
+    test('textDiff equal',()=>{ const d=textDiff('a\nb','a\nb'); if(d.add||d.del)throw new Error('diff'); });
+    test('textDiff change',()=>{ const d=textDiff('a','a\nb'); if(!d.add)throw new Error('add'); });
+    test('findSpellMarks',()=>{ const s=new Set(['ciao']); const m=findSpellMarks(['xyz ciao'],s); if(m.length!==1)throw new Error('marks'); });
+    test('suggestWords',()=>{ const s=new Set(['casa','caso','caro']); const g=suggestWords('casa',s,3); if(!g.length)throw new Error('suggest'); });
+    test('addUserWord',()=>{ const c={userDict:[]}; addUserWord(c,'Test'); if(c.userDict[0]!=='test')throw new Error('dict'); });
+    return tests;
+  }
+
   function ensureTemplates(disk){
     Object.keys(TEMPLATES).forEach(n=>{ if(!disk[n])disk[n]=TEMPLATES[n]; });
   }
@@ -123,7 +163,7 @@
 
   root.VSExt={
     t,TEMPLATES,themeFG,applyTheme,cycleTheme,textDiff,
-    buildSpellSet,findSpellMarks,nextSpellMark,addUserWord,
-    ensureTemplates,macroRecord,macroRun,setupInstallPrompt,promptInstall
+    buildSpellSet,findSpellMarks,nextSpellMark,addUserWord,suggestWords,
+    ensureTemplates,macroRecord,macroRun,setupInstallPrompt,promptInstall,runTests
   };
 })(typeof window!=='undefined'?window:globalThis);

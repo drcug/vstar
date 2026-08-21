@@ -16,10 +16,12 @@ Live: https://drcug.github.io/vstar/index.html
 - PWA offline, apertura file `.cio`, condivisione testo verso l'app, prompt installazione
 - Tastiera touch (SPAZIO/CTRL in basso, `?` sulla riga Z), zoom portrait, suoni retro, schermo intero
 - **SpellStar** interattivo (F7 prossimo errore, A ignora parola), **MailMerge** con anteprima
-- Versioni file (10/file) con diff al ripristino, template `LETTERA.CIO` / `INVITO.CIO`
-- Menu file paginato, hover, menu contestuale (click destro / long press)
-- Temi verde/ambra, CRT on/off, scala font, lingua IT/EN, macro testo (F8 / ^QM)
-- Doppio tap per selezionare parola in editor
+- Versioni file (10/file) con **selettore** e diff al ripristino
+- MailMerge con **anteprima a schermo** (PgSu/PgGiu, Y conferma)
+- SpellStar con **suggerimenti** (tasti 1-3 sostituiscono, A ignora)
+- Sync Drive selettivo **paginato** per tutti i file
+- Share target PWA legge anche parametro `url`
+- Service worker v7: network-first per HTML/JS, avviso aggiornamento in Opzioni
 
 ## Comandi rapidi
 
@@ -51,7 +53,7 @@ node -e "require('./js/vs-lib.js').runTests().forEach(r=>console.log(r.ok?'OK':'
 
 Test libreria: apri `tests/test.html`.
 
-Dopo un deploy, se la PWA mostra una versione vecchia: **Ctrl+F5** o disattiva il service worker (cache `vaaardstar-v6`).
+Dopo un deploy, se la PWA mostra una versione vecchia: **Ctrl+F5** o disattiva il service worker (cache `vaaardstar-v7`). L'app avvisa in Opzioni quando c'è un aggiornamento.
 
 ## Struttura
 

@@ -177,8 +177,9 @@ const S={
   spellMarks:null, spellPos:0
 };
 let optPage=0,filePageOpen=0,filePageDir=0,fileHoverRow=-1,ctxFile=null;
+let verPick=null,mergePreview=null,syncFilePage=0,swUpdatePending=false;
 let lastTapAt=0,lastTapX=0,lastTapY=0,longPressTimer=null;
-const FILES_PER_OPEN=7,FILES_PER_DIR=15,DISK_LIMIT=360*1024;
+const FILES_PER_OPEN=7,FILES_PER_DIR=15,FILES_PER_SYNC=8,DISK_LIMIT=360*1024;
 
 /* ------------------------------ DISCO VIRTUALE (IndexedDB) ------------------------------ */
 const README=
@@ -896,7 +897,11 @@ function setupLaunchQueue(){
 }
 function setupShareTarget(){
   const q=new URLSearchParams(location.search);
-  const text=(q.get('text')||'').trim()||(q.get('title')||'').trim();
+  let text=(q.get('text')||'').trim();
+  const title=(q.get('title')||'').trim();
+  const url=(q.get('url')||'').trim();
+  if(!text&&title)text=title;
+  if(url)text=(text?text+'\n\n':'')+url;
   if(text){
     history.replaceState(null,'',location.pathname);
     pendingLaunch.push({sharedText:text,open:true});
@@ -905,7 +910,25 @@ function setupShareTarget(){
   if(q.get('share-target')==='1')history.replaceState(null,'',location.pathname);
 }
 function registerSW(){
-  if('serviceWorker' in navigator)navigator.serviceWorker.register('./sw.js').catch(()=>{});
+  if(!('serviceWorker' in navigator))return;
+  navigator.serviceWorker.register('./sw.js').then(reg=>{
+    reg.addEventListener('updatefound',()=>{
+      const nw=reg.installing;
+      if(!nw)return;
+      nw.addEventListener('statechange',()=>{
+        if(nw.state==='installed'&&navigator.serviceWorker.controller){
+          swUpdatePending=true;
+          say('Nuova versione disponibile — Opzioni > Ricarica app');
+        }
+      });
+    });
+  }).catch(()=>{});
+}
+function reloadApp(){
+  if('serviceWorker' in navigator){
+    navigator.serviceWorker.getRegistration().then(r=>{ if(r&&r.waiting)r.waiting.postMessage({type:'SKIP_WAITING'}); });
+  }
+  location.reload();
 }
 
 /* ------------------------------ CANVAS 80x25 ------------------------------ */
@@ -977,6 +1000,8 @@ function fit(){
     if(S.mode==='edit'){
       viewCols=Math.max(26,Math.min(44,Math.floor(W/10)));
       FS=Math.max(12,Math.floor(W/viewCols)-1);
+      const fsc=(VSF&&VSF.cfg.fontScale)||1;
+      FS=Math.max(10,Math.floor(FS*fsc));
       applyFont();
       CW=cx.measureText('M').width;
       CH=FS*chu;
@@ -1086,6 +1111,9 @@ function handleOptionsClick(clientX,clientY){
   if(act==='fullscreen'){ toggleFullscreen(); return true; }
   if(act==='textonly'){ setTextOnly(!document.body.classList.contains('text-only')); return true; }
   if(act==='restorever'){ restoreFileVersion(); return true; }
+  if(act==='reloadapp'){ reloadApp(); return true; }
+  if(act==='toggle:soundboot'){ VSF.cfg.soundBoot=!VSF.cfg.soundBoot; VSF.save(idbPutMeta); return true; }
+  if(act==='toggle:bootanim'){ VSF.cfg.bootEnabled=VSF.cfg.bootEnabled===false; VSF.save(idbPutMeta); return true; }
   if(act&&act.indexOf('toggle:')===0){ optToggle(act.slice(7)); return true; }
   if(act==='vol-'){ setVolume(Math.max(0,VSF.cfg.soundVolume-0.1)); return true; }
   if(act==='vol+'){ setVolume(Math.min(1,VSF.cfg.soundVolume+0.1)); return true; }
@@ -1106,13 +1134,14 @@ function handleOptionsClick(clientX,clientY){
   }
   if(act==='pageprev'){ optPage=Math.max(0,optPage-1); return true; }
   if(act==='pagenext'){ optPage=Math.min(4,optPage+1); return true; }
+  if(act==='syncpageprev'){ syncFilePage=Math.max(0,syncFilePage-1); return true; }
+  if(act==='syncpagenext'){ syncFilePage=Math.min(Math.max(0,Math.ceil(Object.keys(disk||{}).length/FILES_PER_SYNC)-1),syncFilePage+1); return true; }
   if(act==='theme'){ const t=VSExt.cycleTheme(VSF.cfg); VSF.save(idbPutMeta); say('Tema: '+t); return true; }
   if(act==='syncnow'){ syncDriveNow(); return true; }
   if(act==='install'){ VSExt.promptInstall().then(ok=>say(ok?'Installazione avviata':'Install non disponibile')); return true; }
   if(act==='font-'){ VSF.cfg.fontScale=Math.max(0.6,Math.round((VSF.cfg.fontScale-0.1)*10)/10); fit(); VSF.save(idbPutMeta); say('Font '+(VSF.cfg.fontScale*100)+'%'); return true; }
   if(act==='font+'){ VSF.cfg.fontScale=Math.min(1.5,Math.round((VSF.cfg.fontScale+0.1)*10)/10); fit(); VSF.save(idbPutMeta); say('Font '+(VSF.cfg.fontScale*100)+'%'); return true; }
-  if(act==='lang'){ VSF.cfg.lang=VSF.cfg.lang==='en'?'it':'en'; VSF.save(idbPutMeta); say('Lingua: '+VSF.cfg.lang); return true; }
-  if(act==='toggle:boot'){ VSF.cfg.bootEnabled=!VSF.cfg.bootEnabled; VSF.save(idbPutMeta); return true; }
+  if(act==='lang'){ VSF.cfg.lang=VSF.cfg.lang==='en'?'it':'en'; document.documentElement.lang=VSF.cfg.lang; if(speechRec)speechRec.lang=VSF.cfg.lang==='en'?'en-US':'it-IT'; VSF.save(idbPutMeta); say('Lingua: '+VSF.cfg.lang); return true; }
   if(act==='toggle:crt'){ VSF.cfg.crtOff=!VSF.cfg.crtOff; VSExt.applyTheme(VSF.cfg); VSF.save(idbPutMeta); return true; }
   if(act==='macro'){ ask('Testo macro? ',t=>{ VSF.cfg.macroText=t; VSF.save(idbPutMeta); say('Macro impostata'); }); return true; }
   return false;
@@ -1181,6 +1210,18 @@ function updateFileHover(clientX,clientY){
 
 function handleFileListClick(clientX,clientY){
   if(handleOptionsClick(clientX,clientY))return true;
+  if(S.mode==='verpick'&&verPick){
+    const cell=canvasToCell(clientX,clientY);
+    if(!cell)return false;
+    const name=hitTestFile(cell.row,cell.col);
+    if(name&&name.indexOf('ver:')===0){
+      const id=+name.slice(4);
+      const v=verPick.list.find(x=>x.id===id);
+      if(v)confirmRestoreVersion(v);
+      return true;
+    }
+    return false;
+  }
   if(!disk||(S.mode!=='open'&&S.mode!=='dir'))return false;
   const cell=canvasToCell(clientX,clientY);
   if(!cell)return false;
@@ -1533,7 +1574,20 @@ function gotoNextSpell(){
   const m=VSExt.nextSpellMark(S.spellMarks,{ln:S.ln,col:S.col+1});
   if(!m){ say('SpellStar: fine lista'); return; }
   S.ln=m.ln; S.col=m.start; ensureVisible();
-  say('SpellStar: '+m.word+' (^F7 prossimo, A=ignora)');
+  const set=VSExt.buildSpellSet(VSF.cfg);
+  const sug=VSExt.suggestWords(m.word,set,3);
+  const hint=sug.length?'  ['+sug.map((w,i)=>(i+1)+':'+w).join(' ')+']':'';
+  say('SpellStar: '+m.word+hint+' (1-3 sostituisci, A ignora, F7 prossimo)');
+}
+function replaceSpellWord(replacement){
+  if(!S.spellMarks||!S.spellMarks.length)return;
+  const m=VSExt.nextSpellMark(S.spellMarks,{ln:S.ln,col:S.col});
+  if(!m)return;
+  pushUndo();
+  const line=S.doc[m.ln]||'';
+  S.doc[m.ln]=line.slice(0,m.start)+replacement+line.slice(m.end);
+  if(S.ln===m.ln&&S.col>=m.start)S.col+=replacement.length-(m.end-m.start);
+  markDirty(); refreshSpellMarks(); gotoNextSpell();
 }
 function ignoreSpellWord(){
   if(!S.spellMarks||!S.spellMarks.length)return;
@@ -1862,42 +1916,50 @@ function runMailMerge(){
       if(!(dat in disk))return noFile(dat);
       const merged=VSLib.mergeAll(disk[tpl],disk[dat]);
       if(!merged.length){ say('Nessuna riga dati'); beep(); return; }
-      const preview=merged[0].content.slice(0,200);
-      askYN((VSExt?VSExt.t('preview'):'Anteprima OK? ')+' '+preview.slice(0,60)+'... ',ok=>{
-        if(!ok)return;
-        askName('Prefisso output? ',pre=>{
-          const base=(pre||'OUT').toUpperCase().replace(/[^A-Z0-9._\-]/g,'').slice(0,8);
-          merged.forEach((m,i)=>{
-            const fn=(base+String(i+1).padStart(2,'0')).slice(0,8)+EXT;
-            disk[fn]=m.content;
-          });
-          saveDisk().then(()=>say('MailMerge: '+merged.length+' file creati'));
-        },true);
-      });
+      mergePreview={merged,idx:0,tpl,dat};
+      S.mode='mergepreview';
     },true);
   },true);
 }
-function showWordCount(){
-  const text=S.mode==='edit'?S.doc.join('\n'):'';
-  const src=text|| (S.filename&&disk[S.filename]?disk[S.filename]:'');
-  const c=VSLib.countWords(src);
-  say('Parole:'+c.words+'  Caratteri:'+c.chars+'  Righe:'+c.lines);
+function finishMailMerge(prefix){
+  if(!mergePreview)return;
+  const base=(prefix||'OUT').toUpperCase().replace(/[^A-Z0-9._\-]/g,'').slice(0,8);
+  mergePreview.merged.forEach((m,i)=>{
+    const fn=(base+String(i+1).padStart(2,'0')).slice(0,8)+EXT;
+    disk[fn]=m.content;
+  });
+  const n=mergePreview.merged.length;
+  mergePreview=null;
+  S.mode='open';
+  saveDisk().then(()=>say('MailMerge: '+n+' file creati'));
 }
 function restoreFileVersion(){
   askName('Ripristinare versione di quale file? ',async n=>{
     if(!(n in disk))return noFile(n);
     const list=await idbListVersions(n);
     if(!list.length){ say('Nessuna versione salvata'); beep(); return; }
-    const v=list[0];
-    const diff=VSExt?VSExt.textDiff(disk[n],v.content):{add:0,del:0};
-    askYN('Ripristinare '+new Date(v.ts).toLocaleString()+'? Diff +'+diff.add+'/-'+diff.del+' ',y=>{
-      if(!y)return;
-      disk[n]=v.content;
-      saveDiskFile(n);
-      if(S.filename===n&&S.mode==='edit'){ S.doc=v.content.split(/\r?\n/); S.dirty=true; markDirty(); refreshSpellMarks(); }
-      say('Versione ripristinata');
-    });
+    verPick={file:n,list,idx:0};
+    S.mode='verpick';
   },true);
+}
+function confirmRestoreVersion(v){
+  const n=verPick.file;
+  const diff=VSExt?VSExt.textDiff(disk[n],v.content):{add:0,del:0};
+  askYN('Ripristinare '+new Date(v.ts).toLocaleString()+'? Diff +'+diff.add+'/-'+diff.del+' ',y=>{
+    if(!y)return;
+    disk[n]=v.content;
+    saveDiskFile(n);
+    if(S.filename===n&&S.mode==='edit'){ S.doc=v.content.split(/\r?\n/); S.dirty=true; markDirty(); refreshSpellMarks(); }
+    verPick=null;
+    S.mode='options';
+    say('Versione ripristinata');
+  });
+}
+function showWordCount(){
+  const text=S.mode==='edit'?S.doc.join('\n'):'';
+  const src=text|| (S.filename&&disk[S.filename]?disk[S.filename]:'');
+  const c=VSLib.countWords(src);
+  say('Parole:'+c.words+'  Caratteri:'+c.chars+'  Righe:'+c.lines);
 }
 function diskUsageBar(row){
   const used=Object.keys(disk||{}).reduce((a,n)=>a+(disk[n]||'').length,0);
@@ -2176,6 +2238,15 @@ function keyEdit(e){
     case 'Escape': S.msg=''; return;
   }
   if(!ctrl&&!e.altKey&&(k==='a'||k==='A')&&S.spellMarks&&S.spellMarks.length){ ignoreSpellWord(); return; }
+  if(!ctrl&&!e.altKey&&S.spellMarks&&S.spellMarks.length&&/^[1-3]$/.test(k)){
+    const set=VSExt.buildSpellSet(VSF.cfg);
+    const m=VSExt.nextSpellMark(S.spellMarks,{ln:S.ln,col:S.col});
+    if(m){
+      const sug=VSExt.suggestWords(m.word,set,3);
+      const rep=sug[+k-1];
+      if(rep){ replaceSpellWord(rep); return; }
+    }
+  }
   if(ctrl&&letter){ ctrlCmd(letter); return; }
   if(!ctrl&&!e.altKey&&k&&k.length===1&&k>=' '){ insertChar(k); return; }
 }
@@ -2342,11 +2413,12 @@ function drawOptions(){
     drawTxt(8,4,(isFullscreen()?'> Esci schermo intero (F)':'> Schermo intero (F)')); registerOptionHit('fullscreen',8,4,8,30);
     drawTxt(9,4,(document.body.classList.contains('text-only')?'> Disattiva solo testo':'> Solo testo (T)')); registerOptionHit('textonly',9,4,9,28);
     drawTxt(11,4,'> Ripristina versione file'); registerOptionHit('restorever',11,4,11,30);
+    if(swUpdatePending)drawTxt(13,4,'> Ricarica app (nuova versione)'); registerOptionHit('reloadapp',13,4,13,36);
   }else if(optPage===1){
     drawTxt(2,2,'--- Suoni ---');
     drawTxt(4,4,'Tastiera ['+yn(VSF.cfg.soundKeys)+']'); registerOptionHit('toggle:keys',4,4,4,22);
     drawTxt(5,4,'Disk drive ['+yn(VSF.cfg.soundDisk)+']'); registerOptionHit('toggle:disk',5,4,5,24);
-    drawTxt(6,4,'Boot ['+yn(VSF.cfg.soundBoot)+']'); registerOptionHit('toggle:boot',6,4,6,18);
+    drawTxt(6,4,'Boot suono ['+yn(VSF.cfg.soundBoot)+']'); registerOptionHit('toggle:soundboot',6,4,6,24);
     drawTxt(7,4,'Aptica ['+yn(VSF.cfg.haptic)+']'); registerOptionHit('toggle:haptic',7,4,7,20);
     drawTxt(9,4,'Profilo: '+VSF.cfg.soundProfile.toUpperCase()+'  (clicca)'); registerOptionHit('prof',9,4,9,36);
     drawTxt(10,4,'Volume: '+Math.round(VSF.cfg.soundVolume*100)+'%  [-] [+]');
@@ -2368,19 +2440,27 @@ function drawOptions(){
     drawTxt(6,4,'> Sincronizza ora'); registerOptionHit('syncnow',6,4,6,24);
     drawTxt(8,4,'Sync tutti ['+yn(VSF.cfg.driveSyncAll)+']'); registerOptionHit('syncall',8,4,8,28);
     drawTxt(10,4,'File (clicca sync ON/OFF):');
-    const names=Object.keys(disk||{}).sort().slice(0,6);
-    names.forEach((n,i)=>{
+    const syncNames=Object.keys(disk||{}).sort();
+    const syncPages=Math.max(1,Math.ceil(syncNames.length/FILES_PER_SYNC));
+    if(syncFilePage>=syncPages)syncFilePage=0;
+    const syncSlice=syncNames.slice(syncFilePage*FILES_PER_SYNC,(syncFilePage+1)*FILES_PER_SYNC);
+    syncSlice.forEach((n,i)=>{
       const row=11+i, on=VSF.cfg.driveSyncAll||VSF.cfg.driveSyncFiles[n]!==false;
       drawTxt(row,6,(on?'[X] ':'[ ] ')+n+(extHandles.has(n)?' @':''));
       registerOptionHit('syncfile:'+n,row,6,row,22);
     });
+    if(syncPages>1){
+      drawTxt(19,6,'< Pag '+(syncFilePage+1)+'/'+syncPages+' >');
+      registerOptionHit('syncpageprev',19,6,19,12);
+      registerOptionHit('syncpagenext',19,22,19,32);
+    }
   }else{
     drawTxt(2,2,'--- Aspetto ---');
     drawTxt(4,4,'Tema: '+(VSF.cfg.theme||'white')+'  (clicca)'); registerOptionHit('theme',4,4,4,28);
     drawTxt(5,4,'Font: '+Math.round(VSF.cfg.fontScale*100)+'%  [-] [+]');
     registerOptionHit('font-',5,4,5,24); registerOptionHit('font+',5,32,5,38);
     drawTxt(6,4,'Scanline CRT ['+yn(!VSF.cfg.crtOff)+']'); registerOptionHit('toggle:crt',6,4,6,28);
-    drawTxt(7,4,'Boot animato ['+yn(VSF.cfg.bootEnabled!==false)+']'); registerOptionHit('toggle:boot',7,4,7,28);
+    drawTxt(7,4,'Boot animato ['+yn(VSF.cfg.bootEnabled!==false)+']'); registerOptionHit('toggle:bootanim',7,4,7,28);
     drawTxt(8,4,'Lingua: '+VSF.cfg.lang+'  (clicca)'); registerOptionHit('lang',8,4,8,24);
     drawTxt(10,4,'> Installa app PWA'); registerOptionHit('install',10,4,10,24);
     drawTxt(11,4,'> Imposta macro testo'); registerOptionHit('macro',11,4,11,26);
@@ -2427,6 +2507,47 @@ function drawDir(){
   drawTxt(23,4,'Clicca un file per aprirlo, un tasto per tornare al menu');
   bottomLine(false);
 }
+function drawVerPick(){
+  clearFileHits();
+  center(0,'VERSIONI: '+verPick.file);
+  const slice=verPick.list.slice(verPick.idx,verPick.idx+8);
+  slice.forEach((v,i)=>{
+    const row=3+i;
+    const diff=VSExt?VSExt.textDiff(disk[verPick.file],v.content):{add:0,del:0};
+    const label=(verPick.idx+i+1)+'. '+new Date(v.ts).toLocaleString()+'  +'+diff.add+'/-'+diff.del;
+    drawTxt(row,2,label.slice(0,68));
+    registerFileHit('ver:'+v.id,row,2,70);
+  });
+  drawTxt(21,2,'Digita 1-9, clicca riga, PgSu/PgGiu pagina  ESC annulla');
+  bottomLine(false);
+}
+function drawMergePreview(){
+  clearFileHits();
+  if(!mergePreview)return;
+  center(0,'MAILMERGE ANTEPRIMA  '+(mergePreview.idx+1)+'/'+mergePreview.merged.length);
+  drawTxt(2,2,'Modello: '+mergePreview.tpl+'  CSV: '+mergePreview.dat);
+  const lines=(mergePreview.merged[mergePreview.idx].content||'').split('\n');
+  for(let i=0;i<12;i++)drawTxt(4+i,2,(lines[i]||'').slice(0,72));
+  drawTxt(18,2,'Y=crea tutti i file   N/ESC=annulla   PgSu/PgGiu=lettera');
+  bottomLine(false);
+}
+function keyVerPick(e){
+  if(e.code==='Escape'){ verPick=null; S.mode='options'; return; }
+  if(e.code==='PageUp'){ verPick.idx=Math.max(0,verPick.idx-8); return; }
+  if(e.code==='PageDown'){ verPick.idx=Math.min(Math.max(0,verPick.list.length-8),verPick.idx+8); return; }
+  if(/^[1-9]$/.test(e.key||'')){
+    const i=verPick.idx+(+e.key)-1;
+    if(i>=0&&i<verPick.list.length)confirmRestoreVersion(verPick.list[i]);
+  }
+}
+function keyMergePreview(e){
+  if(e.code==='Escape'||e.key==='n'||e.key==='N'){ mergePreview=null; S.mode='open'; return; }
+  if(e.code==='PageUp'){ mergePreview.idx=Math.max(0,mergePreview.idx-1); return; }
+  if(e.code==='PageDown'){ mergePreview.idx=Math.min(mergePreview.merged.length-1,mergePreview.idx+1); return; }
+  if(e.key==='y'||e.key==='Y'||e.code==='Enter'){
+    askName('Prefisso output? ',pre=>finishMailMerge(pre),true);
+  }
+}
 function drawHelp(){
   center(0,'AIUTO DI VaaardStar');
   const pg=HELP_PAGES[S.helpPage]||[];
@@ -2467,6 +2588,8 @@ function frame(){
     case 'open': drawOpen(); break;
     case 'options': drawOptions(); break;
     case 'dir': drawDir(); break;
+    case 'verpick': drawVerPick(); break;
+    case 'mergepreview': drawMergePreview(); break;
     case 'edit': drawEdit(); break;
     case 'help': drawHelp(); break;
     case 'dos': drawDos(); break;
@@ -2506,6 +2629,8 @@ function dispatch(e){
     case 'open': keyOpen(e); break;
     case 'options': keyOptions(e); break;
     case 'dir': keyDir(e); break;
+    case 'verpick': keyVerPick(e); break;
+    case 'mergepreview': keyMergePreview(e); break;
     case 'help': keyHelp(e); break;
     case 'dos': keyDos(e); break;
     case 'edit': keyEdit(e); break;
